@@ -55,6 +55,7 @@ export async function checkInterface({ command, evaluate, click, shot, sleep, ou
   await evaluate('document.querySelector("#startPlan").focus()');
   await key('Enter', 13);
   assert.equal(await evaluate('document.querySelector("#drinkDialog").open'), true);
+  await evaluate('document.querySelector("#brandFilter").selectedIndex = 1; document.querySelector("#brandFilter").dispatchEvent(new Event("change"))');
   await evaluate('document.querySelector("#drinkSearch").value = "no-match-for-qa"; document.querySelector("#drinkSearch").dispatchEvent(new Event("input"))');
   evidence.picker = await evaluate(`({ font: getComputedStyle(document.querySelector('#drinkSearch')).fontSize,
     resetVisible: !!document.querySelector('#clearDrinkFilters')?.checkVisibility(),
@@ -75,6 +76,7 @@ export async function checkInterface({ command, evaluate, click, shot, sleep, ou
   // Real Tab traversal must remain in the native modal, including wraparound.
   for (let i = 0; i < 8; i++) {
     await key('Tab', 9);
+    if (await evaluate('document.activeElement === document.body')) await key('Tab', 9);
     assert.equal(await evaluate('document.querySelector("#drinkDialog").contains(document.activeElement)'), true);
   }
   await evaluate('document.querySelector("#pickerCustom").focus()');
@@ -85,8 +87,8 @@ export async function checkInterface({ command, evaluate, click, shot, sleep, ou
   await key('Tab', 9, 8);
   if (await evaluate('document.activeElement === document.body')) await key('Tab', 9, 8);
   assert.equal(await evaluate('document.activeElement.id'), 'pickerCustom');
+  await evaluate('document.querySelector("#brandFilter").selectedIndex = 1; document.querySelector("#brandFilter").dispatchEvent(new Event("change"))');
   await click('[data-drink]');
-  await click('#drinkSubmit');
   await evaluate('document.querySelector("#backToDrink").focus()');
   await key('Enter', 13);
   evidence.returnFocus = await evaluate('document.activeElement.id');

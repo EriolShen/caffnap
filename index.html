@@ -836,6 +836,20 @@
         </button>
       </div>
       <div id="drinkPicker">
+        <div id="planContext" hidden>
+          <p id="planGoal" class="small muted"></p>
+          <div class="form-grid">
+            <label>准备喝几份<input id="planCups" type="number" min="0.01" max="10" step="any" value="1" /></label>
+            <label>日期<input id="planDate" type="date" /></label>
+            <label>时间<input id="planTime" type="time" /></label>
+          </div>
+          <p id="planError" class="form-error" role="alert"></p>
+        </div>
+        <div class="filter-row">
+          <label for="brandFilter">品牌</label>
+          <select id="brandFilter"><option value="">全部品牌</option></select>
+          <span class="small muted" id="drinkResultCount" role="status"></span>
+        </div>
         <div class="search-box">
           <i data-lucide="search"></i
           ><label class="sr-only" for="drinkSearch">搜索饮品或品牌</label
@@ -846,12 +860,7 @@
             autocomplete="off"
           />
         </div>
-        <div class="filter-row">
-          <label class="sr-only" for="brandFilter">品牌筛选</label
-          ><select id="brandFilter">
-            <option value="">全部品牌</option></select
-          ><span class="small muted" id="drinkResultCount" role="status"></span>
-        </div>
+        <p id="recommendationNote" class="small muted" hidden></p>
         <div id="drinkResults" class="drink-results"></div>
         <button class="text-button" id="pickerCustom">
           <i data-lucide="plus"></i>没找到？添加自己的饮品
@@ -887,16 +896,27 @@
             <i data-lucide="arrow-left"></i>调整这杯</button
           ><span class="small muted" id="compareTarget"></span>
         </div>
-        <p class="small muted">目标时间的咖啡因估算残留 · 已计入此前记录</p>
-        <div id="compareOptions"></div>
+        <section class="decision-summary" aria-labelledby="decisionSummaryTitle" aria-live="polite">
+          <p class="eyebrow">这一杯与今晚</p>
+          <h3 id="decisionSummaryTitle" tabindex="-1"></h3>
+          <p id="decisionAdvice"></p>
+          <dl class="decision-metrics">
+            <div><dt>比不加这一杯，预计延后</dt><dd id="decisionDelta"></dd><small id="decisionSleep"></small></div>
+            <div><dt>咖啡因降至参考值</dt><dd id="decisionClear"></dd><small id="decisionThreshold"></small></div>
+          </dl>
+          <p class="small" id="decisionBaseline"></p>
+          <p class="small muted" id="decisionContext"></p>
+        </section>
+        <fieldset class="decision-options"><legend>换个选择，看看有什么不同</legend><div id="compareOptions"></div></fieldset>
         <p class="small muted">
-          区间只反映饮品含量范围，不是睡眠时间或个人代谢的置信区间。即使低于模型参考值，也不保证不影响睡眠。
+          入睡时间是探索性模型估算，假设你按目标时间上床。含量区间来自饮品库，不是预测准确度；实际反应因人而异。
         </p>
         <p id="compareMessage" class="comparison-message" role="status"></p>
         <div class="form-actions">
-          <button class="button primary" id="confirmConsumed">
+          <button class="button primary" id="finishCompare">想好了，先不记录</button>
+          <button class="button secondary" id="confirmConsumed">
             <i data-lucide="check"></i>实际喝过，确认记录</button
-          ><button class="button secondary" id="finishCompare">先不记录</button>
+          >
         </div>
       </div>
     </dialog>

@@ -6,6 +6,7 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { checkInterface } from './interface-checks.mjs';
 import { checkNewcomer } from './newcomer-checks.mjs';
+import { checkDecision } from './decision-checks.mjs';
 
 // A separate QA origin/profile: never reads or edits the user's file:// records.
 const root = path.resolve(import.meta.dirname, '..');
@@ -77,6 +78,8 @@ try {
   };
   await command('Page.enable');
   await command('Runtime.enable');
+  // Headless tabs must own focus for native focus/blur events, not just activeElement.
+  await command('Emulation.setFocusEmulationEnabled', { enabled: true });
   await command('Page.navigate', { url: appUrl });
   await sleep(800);
   await evaluate('localStorage.removeItem("caffnap_workspace_v2")');
@@ -86,6 +89,7 @@ try {
   await checkNewcomer({ command, evaluate, click, shot, sleep });
   if (await evaluate('document.querySelector("#orientation").open')) await click('#orientationExplore');
   await checkInterface({ command, evaluate, click, shot, sleep, out });
+  await checkDecision({ command, evaluate, click, shot, sleep });
   for (const [width, height] of [[1440,900],[1280,720],[1024,768],[820,1180],[768,1024],[390,844],[320,740]]) {
     await command('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: width < 600 });
     await evaluate('scrollTo(0,0)');
@@ -112,8 +116,8 @@ try {
   await command('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
   await click('#startPlan');
   assert.equal(await evaluate('document.querySelector("#drinkDialog").open'), true);
+  await evaluate('document.querySelector("#brandFilter").selectedIndex = 1; document.querySelector("#brandFilter").dispatchEvent(new Event("change"))');
   await click('[data-drink]');
-  await click('#drinkSubmit');
   assert.equal(await evaluate('document.querySelector("#comparison").hidden'), false);
   await shot('lifestyle-compare-mobile');
   await click('#finishCompare');
@@ -175,7 +179,12 @@ try {
     await evaluate(`document.getElementById('${id}').closest('.model-chart').scrollIntoView({ block: 'start' })`);
     await shot('interface-curve-viewport-' + (index + 1));
   }
+  await evaluate('document.querySelector("#caffeineHelp .chart-help-trigger").scrollIntoView({ block: "center" })');
+  await sleep(100);
+  // The earlier notification test can leave this same trigger focused with its tip dismissed.
+  await evaluate('document.querySelector("#caffeineHelp .chart-help-trigger").blur()');
   await evaluate('document.querySelector("#caffeineHelp .chart-help-trigger").focus()');
+  assert.equal(await evaluate('document.hasFocus()'), true, 'Keyboard check requires an active browser tab');
   assert.equal(await evaluate('document.querySelector("#caffeineTooltip").hidden'), false);
   await command('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
   await command('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });

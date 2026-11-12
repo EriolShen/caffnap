@@ -64,7 +64,8 @@
       setupMode: mode,
     };
   }
-  function compare(records, draft, target, profile, alternative) {
+  function compare(records, draft, target, profile, alternative, nap = {}, now = new Date()) {
+    const baseline = scenario(records, null, target, profile, nap, now);
     const options = [
       {
         id: "original",
@@ -90,12 +91,14 @@
     options.push({ id: "none", title: "这次先不喝", beverage: null, cups: 0 });
     return options.map((o) => ({
       ...o,
-      ...assess(
-        o.beverage
-          ? [...records, { ...draft, beverage: o.beverage, cups: o.cups }]
-          : records,
+      ...scenario(
+        records,
+        o.beverage ? { ...draft, beverage: o.beverage, cups: o.cups } : null,
         target,
         profile,
+        nap,
+        now,
+        baseline,
       ),
     }));
   }
@@ -149,13 +152,15 @@
     return 45;
   }
   function predict(records, target, profile, nap = {}, now = new Date()) {
+    return predictDoses(records.filter(
+      (r) => !r.deletedAt && Date.parse(r.consumedAt) <= +now,
+    ), target, profile, nap);
+  }
+  function predictDoses(doses, target, profile, nap = {}, includeSamples = true) {
     const evening = eveningFor(target),
       start = atTime(evening, "06:00");
     const end = atTime(evening, "12:00");
     end.setDate(end.getDate() + 1);
-    const doses = records.filter(
-      (r) => !r.deletedAt && Date.parse(r.consumedAt) <= +now,
-    );
     const concentration = (at) =>
       (residual(doses, at, profile.halfLife).mid / 42) * 1.15;
     const dlmo = new Date(
@@ -200,7 +205,8 @@
       melRise = null;
     const last = Math.max(
       +atTime(evening, "12:00"),
-      ...doses.map((r) => Date.parse(r.consumedAt) + 30 * MINUTE),
+      ...doses.filter((r) => caffeine(r.beverage).mid * r.cups > 0)
+        .map((r) => Date.parse(r.consumedAt) + 30 * MINUTE),
     );
     for (let t = last; t <= +end; t += 2 * MINUTE) {
       if (concentration(t) <= profile.threshold) {
@@ -219,7 +225,7 @@
         ? new Date(Math.max(+clear, +melRise) + napDelay * MINUTE)
         : null;
     const samples = [];
-    for (let t = +start; t <= +end; t += 5 * MINUTE)
+    for (let t = +start; includeSamples && t <= +end; t += 5 * MINUTE)
       samples.push({
         at: t,
         concentration: concentration(t),
@@ -244,6 +250,38 @@
       hasRecords: doses.length > 0,
     };
   }
+  // A planned dose is explicit, never smuggled in by moving the actual-record clock.
+  function scenario(records, draft, target, profile, nap = {}, now = new Date(), baseline = null) {
+    const actual = records.filter(
+      (r) => !r.deletedAt && Date.parse(r.consumedAt) <= +now,
+    );
+    const doses = draft ? [...actual, draft] : actual;
+    const prediction = predictDoses(doses, target, profile, nap, false);
+    const assessment = assess(doses, target, profile);
+    // Decision estimates assume the user goes to bed at their selected target.
+    const sleep = prediction.sleep ? new Date(Math.max(+new Date(target), +prediction.sleep)) : null;
+    const base = baseline || (draft ? scenario(actual, null, target, profile, nap, now) : null);
+    return {
+      ...assessment,
+      prediction,
+      sleep,
+      baselineSleep: base ? base.sleep : sleep,
+      delayMinutes: sleep && (base ? base.sleep : sleep)
+        ? Math.max(0, Math.round((sleep - (base ? base.sleep : sleep)) / MINUTE)) : null,
+      targetDelayMinutes: sleep ? Math.max(0, Math.round((sleep - new Date(target)) / MINUTE)) : null,
+      fitsTarget: !!sleep && sleep <= new Date(target) &&
+        (assessment.remaining.high / 42) * 1.15 <= profile.threshold,
+    };
+  }
+  function recommend(records, catalog, brand, draft, target, profile, nap = {}, now = new Date()) {
+    const baseline = scenario(records, null, target, profile, nap, now);
+    return catalog.filter((b) => (b.brand || "自定义") === brand).map((beverage) => ({
+      beverage,
+      ...scenario(records, { ...draft, beverage }, target, profile, nap, now, baseline),
+    })).sort((a, b) => Number(b.fitsTarget) - Number(a.fitsTarget) ||
+      (a.sleep ? +a.sleep : Infinity) - (b.sleep ? +b.sleep : Infinity) ||
+      a.remaining.high - b.remaining.high || String(a.beverage.k).localeCompare(String(b.beverage.k)));
+  }
   function cutoff(records, beverage, cups, target, profile, now = new Date()) {
     const actual = records.filter(
       (r) => !r.deletedAt && Date.parse(r.consumedAt) <= +now,
@@ -265,6 +303,8 @@
     targetDate,
     assess,
     compare,
+    scenario,
+    recommend,
     predict,
     cutoff,
     atTime,

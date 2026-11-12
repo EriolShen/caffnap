@@ -932,10 +932,10 @@
     $("drinkForm").hidden = step !== "form";
     $("comparison").hidden = step !== "comparison";
     text("drinkTitle", step === "comparison"
-      ? "这一杯，还有其他选择"
+      ? "喝这一杯，今晚会怎样？"
       : step === "form"
         ? editingId ? "调整这条记录" : mode === "record" ? "这杯，什么时候喝的？" : "这杯，准备几点喝？"
-        : mode === "cutoff" ? "最后一杯，想喝什么？" : mode === "record" ? "刚才，喝了什么？" : "想喝哪一杯？");
+        : mode === "cutoff" ? "最后一杯，想喝什么？" : mode === "record" ? "刚才，喝了什么？" : "想喝哪个品牌？");
     $("drinkDialog").scrollTop = 0;
     icons();
   }
@@ -956,7 +956,7 @@
     );
     $("drinkSearch").value = "";
     $("brandFilter").innerHTML =
-      '<option value="">全部品牌</option>' +
+      '<option value="">' + (mode === "plan" ? "先选一个品牌" : "全部品牌") + '</option>' +
       [...new Set(drinks().map((b) => b.brand || "自定义"))]
         .map(
           (brand) =>
@@ -973,18 +973,62 @@
     $("drinkTime").value = nowTime(date);
     $("drinkDate").max =
       mode === "record" ? S.dayKey(new Date()) : S.dayKey(target());
+    $("planContext").hidden = mode !== "plan";
+    $("recommendationNote").hidden = mode !== "plan";
+    syncPlanInputs();
+    text("planGoal", "睡眠目标 · " + targetLabel() + "。先看看这一杯对今晚的影响。");
+    $("planDate").max = S.dayKey(target());
+    text("planError", "");
     if (!$("drinkDialog").open) $("drinkDialog").showModal();
     if (selected) selectDrink(selected);
     else {
       showDrinkStep("picker");
       renderPicker();
-      $("drinkSearch").focus();
+      $(mode === "plan" ? "brandFilter" : "drinkSearch").focus();
     }
+  }
+  function syncPlanInputs() {
+    ["Cups", "Date", "Time"].forEach((field) => {
+      $("plan" + field).value = $("drink" + field).value;
+    });
+  }
+  function planDraft() {
+    const cups = Number($("planCups").value), date = $("planDate").value,
+      time = $("planTime").value;
+    let error = "", fields = [];
+    if (!(cups >= 0.01 && cups <= 10)) {
+      error = "分量请填写 0.01 到 10 份。";
+      fields = ["planCups"];
+    } else if (!S.validDay(date) || !S.validTime(time)) {
+      error = "请填好准备饮用的日期和时间。";
+      fields = [!S.validDay(date) && "planDate", !S.validTime(time) && "planTime"].filter(Boolean);
+    } else if (new Date(date + "T" + time) >= target()) {
+      error = "饮用时间要早于 " + targetLabel() + " 的睡眠目标。";
+      fields = ["planDate", "planTime"];
+    }
+    ["planCups", "planDate", "planTime"].forEach((id) => {
+      if (fields.includes(id)) {
+        $(id).setAttribute("aria-invalid", "true");
+        $(id).setAttribute("aria-describedby", "planError");
+      } else {
+        $(id).removeAttribute("aria-invalid");
+        $(id).removeAttribute("aria-describedby");
+      }
+    });
+    text("planError", error);
+    return error ? null : { cups, consumedAt: new Date(date + "T" + time).toISOString() };
+  }
+  const delayLabel = (minutes) => minutes === null ? "暂无法比较" : minutes === 0
+    ? "未估算出额外延后" : "约晚 " + Math.max(5, Math.ceil(minutes / 5) * 5) + " 分钟";
+  function estimatedTime(date) {
+    if (!date) return "超出本次估算范围";
+    const rounded = new Date(Math.ceil(+new Date(date) / 300000) * 300000);
+    return "约 " + dateTimeLabel(rounded);
   }
   function renderPicker() {
     const query = $("drinkSearch").value.trim().toLowerCase(),
       brand = $("brandFilter").value;
-    const results = drinks().filter(
+    let results = drinks().filter(
       (b) =>
         (!brand || (b.brand || "自定义") === brand) &&
         [b.drink, b.label, b.brand, b.category, b.spec]
@@ -992,11 +1036,29 @@
           .toLowerCase()
           .includes(query),
     );
+    let recommendations = [];
+    if (mode === "plan") {
+      const context = planDraft();
+      if (!brand || !context) {
+        text("drinkResultCount", "");
+        text("recommendationNote", !brand ? "选好品牌后，看看哪些饮品更接近今晚的睡眠目标。" : "调整上面的时间或分量后，继续看看。" );
+        $("drinkResults").innerHTML = "";
+        return;
+      }
+      recommendations = M.recommend(active(), drinks(), brand, context, target(), data.profile, napSettings());
+      const matches = new Set(results.map((b) => b.k));
+      results = recommendations.filter((r) => matches.has(r.beverage.k)).map((r) => r.beverage);
+      const fits = recommendations.some((r) => r.fitsTarget && matches.has(r.beverage.k));
+      text("recommendationNote", (fits
+        ? "靠前的饮品，估算更接近睡眠目标。"
+        : "这些选择暂未满足睡眠目标的参考条件，可以减量、换个品牌，或这次先不喝。") + "按本次分量和时间排序；饮品库不代表门店实时菜单。");
+      ["Cups", "Date", "Time"].forEach((field) => { $("drink" + field).value = $("plan" + field).value; });
+    }
     text("drinkResultCount", results.length + " 款饮品");
     $("drinkResults").innerHTML = results.length
       ? results
           .map(
-            (b) =>
+            (b, index) =>
               '<button class="drink-choice" data-drink="' +
               escape(b.k) +
               '"><span class="drink-tile">' +
@@ -1007,9 +1069,12 @@
               escape(b.brand || "自定义") +
               " · " +
               escape(b.spec || "每份") +
-              '</small></span><span class="dose-label">' +
+              '</small>' + (mode === "plan" ? '<small class="recommendation-reason">' +
+                (index === 0 && !query ? "优先看看 · " : "") +
+                delayLabel(recommendations.find((r) => r.beverage.k === b.k).delayMinutes) +
+                '</small>' : '') + '</span><span class="dose-label">' +
               range(M.caffeine(b)) +
-              " mg</span></button>",
+              " mg / 份</span></button>",
           )
           .join("")
       : '<div class="empty-state"><div><h3>暂时没找到这杯</h3><p>可以清除筛选再看看，也可以添加自己的饮品。</p><button type="button" class="text-button" id="clearDrinkFilters">' + icon("rotate-ccw") + '清除筛选</button></div></div>';
@@ -1023,6 +1088,7 @@
       return;
     }
     selected = b;
+    if (mode === "plan") $("brandFilter").value = b.brand || "自定义";
     $("selectedDrink").innerHTML =
       '<span class="drink-tile">' +
       icon("coffee") +
@@ -1047,11 +1113,12 @@
     );
     $("drinkSubmit").innerHTML =
       mode === "plan"
-        ? "看看不同选择" + icon("arrow-right")
+        ? "看看这杯的影响" + icon("arrow-right")
         : icon("check") + (editingId ? "保存修改" : "实际喝过，确认记录");
     clearDrinkError();
     showDrinkStep("form");
     $("drinkCups").focus();
+    if (mode === "plan") $("drinkForm").requestSubmit();
   }
   function readDraft() {
     const cups = Number($("drinkCups").value),
@@ -1116,7 +1183,7 @@
   }
   function buildComparison() {
     const lower = drinks().filter(
-      (b) => M.caffeine(b).high < M.caffeine(draft.beverage).low,
+      (b) => b.brand === draft.beverage.brand && M.caffeine(b).high < M.caffeine(draft.beverage).low,
     );
     const coffee = (b) =>
       !/无咖啡|非咖啡/.test(b.category || "") &&
@@ -1128,7 +1195,7 @@
       (a, b) =>
         similarity(b) - similarity(a) || M.caffeine(a).mid - M.caffeine(b).mid,
     );
-    options = M.compare(active(), draft, target(), data.profile, lower[0]);
+    options = M.compare(active(), draft, target(), data.profile, lower[0], napSettings());
     chosen = "original";
     text("compareTarget", "睡眠目标 · " + targetLabel());
     $("compareOptions").innerHTML = options
@@ -1141,26 +1208,44 @@
           '" ' +
           (o.id === chosen ? "checked" : "") +
           '></span><span class="option-dose">' +
-          range(o.remaining) +
-          ' <small style="display:inline">mg</small></span><small>' +
+          (o.delayMinutes === null ? "暂无法比较" : "约 " + Math.ceil(o.delayMinutes / 5) * 5 + " 分钟") +
+          '</span><small>' + estimatedTime(o.sleep) + ' 入睡</small><small>' +
           (o.beverage
             ? escape(name(o.beverage)) + " · " + o.cups + " 份"
             : "仅计算此前已记录的摄入") +
           "</small><small>" +
-          (o.aboveThreshold ? "高于模型参考值" : "低于模型参考值") +
+          "目标时间残留 " + range(o.remaining) + " mg · " + delayLabel(o.delayMinutes) +
           "</small></label>",
       )
       .join("");
     showDrinkStep("comparison");
     updateChoice();
-    $("compareOptions").querySelector("input")?.focus();
+    $("decisionSummaryTitle").focus({ preventScroll: true });
   }
   function updateChoice() {
     const o = options.find((o) => o.id === chosen);
+    if (!o) return;
+    text("decisionSummaryTitle", !o.beverage ? "这次先不喝，看看今晚" : o.delayMinutes === null
+      ? "这杯的影响，暂时估不出多久" : o.delayMinutes > 0
+        ? "这一杯，可能让你更晚入睡" : "这杯的额外影响暂不明显");
+    text("decisionAdvice", !o.sleep ? "截至 " + dateTimeLabel(o.prediction.end) + "，模型暂未找到预计入睡时间。"
+      : !o.beverage ? "只计算已经喝过的饮品。"
+      : o.targetDelayMinutes > 0 ? "按这次试算，入睡可能比目标时间晚约 " + Math.max(5, Math.ceil(o.targetDelayMinutes / 5) * 5) + " 分钟。"
+      : o.fitsTarget ? "没有估算出比目标更晚的入睡时间，仍要留意自己的感受。"
+      : "入睡时间没有明显推迟，但含量区间的高值仍超过参考值。可以试试半份。" );
+    text("decisionSleep", "预计入睡 · " + estimatedTime(o.sleep));
+    text("decisionDelta", o.delayMinutes === null ? "暂无法比较" : "约 " + Math.ceil(o.delayMinutes / 5) * 5 + " 分钟");
+    text("decisionClear", o.prediction.clear && o.prediction.clear <= new Date()
+      ? "当前已低于参考值" : estimatedTime(o.prediction.clear));
+    text("decisionThreshold", "参考浓度 " + data.profile.threshold + " mg/L；不是完全代谢，也不保证不影响睡眠。");
+    text("decisionBaseline", "不加这一杯，预计 " + estimatedTime(o.baselineSleep).replace(/^约 /, "") + " 入睡。");
+    text("decisionContext", dateTimeLabel(draft.consumedAt) + " 饮用 · " +
+      (o.beverage ? name(o.beverage) + " " + o.cups + " 份 · " : "") +
+      "已计入实际记录" + (napSettings().enabled ? "和小睡设置" : "") + " · " + data.profile.source);
     $("confirmConsumed").hidden = !o?.beverage;
     $("confirmConsumed").disabled =
       !!draft && Date.parse(draft.consumedAt) > Date.now();
-    text("finishCompare", o?.beverage ? "先不记录" : "完成，不记录");
+    text("finishCompare", o?.beverage ? "想好了，先不记录" : "这次先不喝");
     text(
       "compareMessage",
       !o?.beverage
@@ -1382,7 +1467,9 @@
   $("napEnabled").onchange = () => $("napForm").requestSubmit();
   $("drinkSearch").oninput = renderPicker;
   $("brandFilter").onchange = renderPicker;
+  ["planCups", "planDate", "planTime"].forEach((id) => { $(id).oninput = renderPicker; });
   $("changeDrink").onclick = () => {
+    syncPlanInputs();
     showDrinkStep("picker");
     renderPicker();
     $("drinkSearch").focus();
