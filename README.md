@@ -14,7 +14,7 @@ GitHub Pages 发布入口为 `https://eriolshen.github.io/caffnap/`，实际部�
 
 更新 `main` 分支后，`.github/workflows/pages.yml` 自动运行测试、生成静态文件并部署。Pages 设置使用 GitHub Actions。也可以在 Actions 中手动运行 Publish GitHub Pages。
 
-`node scripts/build-pages.mjs` 在 `dist/` 生成网页运行所需文件，不包含测试截图、浏览器缓存、工作文档或数据库源文件。线上与本地文件页面的记录互不自动同步；需要迁移时先导出 JSON，再到新页面导入。
+`node scripts/build-pages.mjs` 在 `dist/` 生成网页运行所需文件，不包含测试截图、浏览器缓存、工作文档或数据库源文件。生成的页面会为脚本、样式和插图添加内容版本标识，避免更新时混用旧资源。线上与本地文件页面的记录互不自动同步；需要迁移时先导出 JSON，再到新页面导入。
 
 公开版本保留纳挼崩音黑标题字体。需要临时切换系统标题字体时，可以设置仓库变量 `PUBLISH_TITLE_FONT=false` 后重新部署；无需改变本地样式。
 

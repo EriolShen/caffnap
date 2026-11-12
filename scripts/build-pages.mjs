@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
 
 const root = path.resolve(import.meta.dirname, '..');
 const runtimeFiles = [
@@ -28,6 +29,13 @@ export function buildPages(outDir, { includeTitleFont = true } = {}) {
     fs.rmSync(fontPath, { force: true });
   }
   fs.writeFileSync(path.join(outDir, 'style.css'), css);
+  let html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
+  for (const file of [...runtimeFiles, 'style.css'].filter(file => /\.(js|css|png)$/.test(file))) {
+    const revision = createHash('sha256').update(fs.readFileSync(path.join(outDir, file))).digest('hex').slice(0, 12);
+    for (const attribute of ['src', 'href'])
+      html = html.replaceAll(`${attribute}="${file}"`, `${attribute}="${file}?v=${revision}"`);
+  }
+  fs.writeFileSync(path.join(outDir, 'index.html'), html);
   fs.writeFileSync(path.join(outDir, '.nojekyll'), '');
 }
 
