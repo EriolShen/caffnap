@@ -1,232 +1,981 @@
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<meta name="theme-color" content="#1a1a2e">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<title>CaffNap · 咖啡因宵禁 & 入睡预测</title>
-<script src="db.js"></script>
-<link rel="stylesheet" href="style.css">
-</head>
-<body>
-
-<header>
-  <h1>Caff<span>Nap</span></h1>
-  <p>咖啡因宵禁 & 入睡预测 · 咖啡小睡教练</p>
-</header>
-
-<nav class="tabs">
-  <button data-tab="today" class="on">☕ 今日</button>
-  <button data-tab="stats">📊 统计</button>
-  <button data-tab="data">🗃️ 数据</button>
-</nav>
-
-<!-- ==================== 今日 ==================== -->
-<section id="tab-today">
-  <div class="layout">
-
-    <!-- 预测结果 -->
-    <div class="card a-result" style="border-width:2px;">
-      <h2><span class="dot" style="background:var(--green)"></span>预测结果</h2>
-      <div class="result-sub">最早可入睡时间（咖啡因清除 ∧ 褪黑素达 DLMO）</div>
-      <div class="result-main" id="bedtime">—</div>
-      <div class="result-sub" id="bedtimeSub"></div>
-      <div class="stat-row" style="margin-top:10px;"><span>估算半衰期</span><b id="stHalf">—</b></div>
-      <div class="stat-row"><span>咖啡因降至阈值</span><b id="stClear">—</b></div>
-      <div class="stat-row"><span>褪黑素 DLMO（实际）</span><b id="stDlmo">—</b></div>
-      <div class="stat-row"><span>PER1 节律修正（rs7221412）</span><b id="stPer1">—</b></div>
-      <div><span class="badge ok" id="badge">—</span></div>
-      <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;">
-        <button class="btn small" id="shareCardBtn">📤 生成吐槽卡片</button>
-        <button class="btn small ghost" id="icsBtn">📅 宵禁提醒入日历</button>
+<!doctype html>
+<html lang="zh-CN" data-type="software">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#fafaf7" />
+    <meta name="page-type" content="software" />
+    <meta name="site-kind" content="software" />
+    <meta
+      name="description"
+      content="CaffNap 帮你结合睡眠目标，比较饮品选择，记录实际摄入。"
+    />
+    <title>CaffNap · 饮品与睡眠</title>
+    <link rel="stylesheet" href="vendor/driver.css" />
+    <link rel="stylesheet" href="style.css" />
+    <script defer src="vendor/lucide.min.js"></script>
+    <script defer src="vendor/driver.js.iife.js"></script>
+    <script defer src="db.js"></script>
+    <script defer src="model.js"></script>
+    <script defer src="reactions.js"></script>
+    <script defer src="storage.js"></script>
+    <script defer src="tour.js"></script>
+    <script defer src="app.js"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">跳到主要内容</a>
+    <header class="app-header">
+      <a class="brand" href="#page-today" aria-label="CaffNap 首页"
+        ><span class="brand-symbol"><i data-lucide="coffee"></i></span>Caff<span
+          >Nap</span
+        ></a
+      >
+      <nav class="navigation" aria-label="主导航">
+        <button class="nav-button active" data-page="today" aria-current="page">
+          <i data-lucide="sun"></i><span>今日</span>
+        </button>
+        <button class="nav-button" data-page="review">
+          <i data-lucide="chart-no-axes-combined"></i><span>回顾</span>
+        </button>
+        <button class="nav-button" data-page="settings">
+          <i data-lucide="sliders-horizontal"></i><span>设置</span>
+        </button>
+      </nav>
+      <span class="local-label"><i data-lucide="hard-drive"></i> 本机保存</span>
+    </header>
+    <div id="storageWarning" class="storage-warning" role="alert" hidden></div>
+    <main id="main" tabindex="-1">
+      <section id="page-today" class="page">
+        <div class="page-heading">
+          <div>
+            <p class="eyebrow" id="todayDate"></p>
+            <h1>今天的饮品与睡眠</h1>
+          </div>
+          <div class="page-actions">
+            <button class="text-button" id="guideAgain" title="查看功能导览">
+              <i data-lucide="compass"></i>功能导览
+            </button>
+            <button class="button secondary" id="startDaily">
+              <i data-lucide="notebook-pen"></i>今日记录
+            </button>
+          </div>
+        </div>
+        <div class="overview">
+          <section class="daily-status" aria-labelledby="statusTitle">
+            <div class="decision-band" aria-labelledby="decisionTitle">
+              <div class="decision-content">
+                <h2 id="decisionTitle">这一杯，怎么安排？</h2>
+                <div class="action-pair">
+                  <button class="button primary" id="startPlan">
+                    <i data-lucide="coffee"></i>想喝一杯<i data-lucide="arrow-up-right"></i>
+                  </button>
+                  <button class="button secondary" id="startRecord">
+                    <i data-lucide="plus"></i>记录已喝
+                  </button>
+                </div>
+              </div>
+              <img class="decision-art" src="assets/drinks.png" width="128" height="128" alt="" />
+            </div>
+            <h3 id="statusTitle">还没有今天的记录</h3>
+            <p class="muted" id="statusDescription">
+              尚未记录，不代表没有摄入。
+            </p>
+            <div class="daily-numbers">
+              <div>
+                <span>已记录咖啡因</span><strong id="dailyMg">—</strong>
+              </div>
+              <div>
+                <span>睡前估算残留</span><strong id="targetMg">—</strong>
+              </div>
+            </div>
+            <details class="reasoning">
+              <summary>
+                估算依据与局限<i data-lucide="chevron-down"></i>
+              </summary>
+              <p id="modelBasis"></p>
+              <p>
+                残留量来自简化模型，不是身体实测，也不能确定你几点能睡着。饮品配方、代谢差异及其他睡眠因素都会影响结果。
+              </p>
+            </details>
+          </section>
+          <aside class="sleep-goal">
+            <div class="goal-top">
+              <span class="icon-tile lavender"><i data-lucide="moon"></i></span
+              ><label id="goalDay" for="targetBed">今晚的睡眠目标</label>
+            </div>
+            <input id="targetBed" type="time" value="23:00" required />
+            <p>今晚想几点睡？</p>
+            <span class="small muted">目标可随时调整</span>
+          </aside>
+        </div>
+        <section class="prediction-section" aria-labelledby="predictionTitle">
+          <div class="section-heading">
+            <h2 id="predictionTitle">
+              <span class="module-icon"><i data-lucide="sparkles"></i></span
+              >今晚的睡眠预测
+            </h2>
+            <span class="small muted" id="predictionContext">模型估算</span>
+          </div>
+          <div class="prediction-metrics">
+            <div>
+              <span>入睡时间估算</span><strong id="predSleep">—</strong>
+              <p id="predSleepNote" class="small muted"></p>
+            </div>
+            <div>
+              <span>咖啡因降至参考阈值</span><strong id="predClear">—</strong>
+              <p class="small muted">累计已记录的摄入</p>
+            </div>
+            <div>
+              <span>褪黑素节律推迟</span><strong id="predDelay">—</strong>
+              <p class="small muted">相对模型自然节律</p>
+            </div>
+            <div>
+              <span>小睡附加推迟</span><strong id="predNap">—</strong>
+              <p class="small muted" id="predNapNote">未计入小睡</p>
+            </div>
+          </div>
+          <p class="small muted prediction-caution">
+            探索性模型，非身体实测；推算时间不保证能入睡，也不代表之前不能入睡。
+          </p>
+        </section>
+        <section class="intake-section" aria-labelledby="timelineTitle">
+          <div class="lower-layout">
+            <section class="timeline-section" aria-labelledby="timelineTitle">
+              <div class="section-heading">
+                <h2 id="timelineTitle"><i data-lucide="cup-soda"></i>饮用记录</h2>
+                <span class="small muted" id="recordCount">0 条记录</span>
+              </div>
+              <div id="timeline"></div>
+            </section>
+            <aside class="side-section">
+              <div class="section-heading">
+                <h2>最近选择</h2>
+                <i data-lucide="history"></i>
+              </div>
+              <div id="recentDrinks"></div>
+              <div class="feedback-prompt">
+                <span class="icon-tile peach"
+                  ><i data-lucide="sunrise"></i
+                ></span>
+                <h3>昨晚睡得怎么样？</h3>
+                <p class="small muted" id="feedbackPrompt">
+                  留下实际睡眠时间，慢慢了解自己的节奏。
+                </p>
+                <button class="text-button" id="openSleep">
+                  记录睡眠<i data-lucide="arrow-right"></i>
+                </button>
+              </div>
+            </aside>
+          </div>
+        </section>
+        <div class="planning-layout">
+          <section class="nap-section" aria-labelledby="napTitle">
+            <div class="section-heading">
+              <h2 id="napTitle">
+                <span class="module-icon"
+                  ><i data-lucide="alarm-clock"></i></span
+                >咖啡小睡
+              </h2>
+              <span class="small muted" id="napDay"></span>
+            </div>
+            <form id="napForm">
+              <label class="toggle-label"
+                ><input type="checkbox" id="napEnabled" />计入这次小睡</label
+              >
+              <div class="nap-fields">
+                <label
+                  >起床时间<input
+                    type="time"
+                    id="wakeTime"
+                    value="07:00"
+                    required
+                /></label>
+                <label
+                  >小睡开始<input
+                    type="time"
+                    id="napStart"
+                    value="14:10"
+                    required
+                /></label>
+                <label
+                  >小睡时长（分钟）<input
+                    type="number"
+                    id="napDuration"
+                    min="5"
+                    max="120"
+                    step="1"
+                    value="20"
+                    required
+                /></label>
+              </div>
+              <div class="form-actions">
+                <button class="button secondary" type="submit">
+                  <i data-lucide="check"></i>更新小睡</button
+                ><button class="text-button" type="button" id="napRecord">
+                  <i data-lucide="plus"></i>记录小睡前喝的
+                </button>
+              </div>
+              <p class="small muted" id="napSummary" role="status"></p>
+            </form>
+          </section>
+          <section class="cutoff-section" aria-labelledby="cutoffTitle">
+            <div class="section-heading">
+              <h2 id="cutoffTitle">
+                <span class="module-icon"><i data-lucide="clock-3"></i></span
+                >最后一杯，几点喝？
+              </h2>
+              <span class="small muted" id="cutoffTarget"></span>
+            </div>
+            <div class="cutoff-fields">
+              <button class="drink-choice" id="chooseCutoff">
+                <span
+                  ><small>最后一杯</small
+                  ><strong id="cutoffDrink">选择饮品</strong></span
+                ><i data-lucide="chevron-down"></i>
+              </button>
+              <label
+                >份数<input
+                  type="number"
+                  id="cutoffCups"
+                  min="0.01"
+                  max="10"
+                  step="any"
+                  value="1"
+                  required
+              /></label>
+            </div>
+            <div class="cutoff-result" role="status">
+              <span id="cutoffLabel">估算最晚饮用时间</span
+              ><strong id="cutoffTime">—</strong>
+              <p class="small" id="cutoffNote"></p>
+            </div>
+            <p class="small muted">
+              按饮品含量上限和已有摄入反推，额外预留 30
+              分钟。不代表这个时间前喝就不影响睡眠。
+            </p>
+          </section>
+        </div>
+        <section class="curves-section" aria-labelledby="curvesTitle">
+          <div class="section-heading">
+            <h2 id="curvesTitle">
+              <span class="module-icon"
+                ><i data-lucide="chart-no-axes-combined"></i></span
+              >咖啡因与睡眠曲线
+            </h2>
+            <span class="small muted" id="curveRange"></span>
+          </div>
+          <div class="chart-legend">
+            <span class="legend-target">睡眠目标 · 竖虚线</span
+            ><span class="legend-sleep">估算入睡 · 竖实线</span
+            ><span class="legend-nap">小睡时段 · 底色</span>
+          </div>
+          <p class="chart-time-note">
+            横轴都是时间，“次日”表示第二天。估算入睡标记不是确定能睡着的时间。
+          </p>
+          <figure class="model-chart">
+            <figcaption>
+              <h3><i data-lucide="coffee"></i>咖啡因代谢</h3>
+              <span class="small muted"
+                >估算浓度 · mg/L<span class="legend-reference"
+                  >参考阈值</span
+                ></span
+              >
+            </figcaption>
+            <p class="chart-description" id="caffeineDescription">
+              看已记录的咖啡因还剩多少：曲线越高，模型估算的残留越多。
+            </p>
+            <div class="chart-help" id="caffeineHelp">
+              <button
+                type="button"
+                class="chart-help-trigger"
+                aria-label="怎么看咖啡因代谢曲线"
+                aria-describedby="caffeineTooltip"
+              >
+                <i data-lucide="circle-help"></i><span>怎么看这张图</span>
+              </button>
+              <div
+                class="chart-tooltip"
+                id="caffeineTooltip"
+                role="tooltip"
+                hidden
+              >
+                <dl>
+                  <dt><span class="line-key caffeine-key"></span>绿色实线</dt>
+                  <dd>
+                    累计已记录摄入后的估算浓度。新增摄入让曲线上升，随后按代谢参数逐渐下降。
+                  </dd>
+                  <dt>
+                    <span class="line-key reference-key"></span>灰色横虚线
+                  </dt>
+                  <dd>
+                    模型的参考阈值。降到线下不代表咖啡因已完全代谢，也不保证不会影响睡眠。
+                  </dd>
+                  <dt>重点看这里</dt>
+                  <dd>
+                    找到睡眠目标的竖虚线，看它与绿色曲线的交点在参考阈值上方还是下方。纵轴
+                    mg/L 是估算浓度，不是喝下去的毫克数。
+                  </dd>
+                </dl>
+              </div>
+            </div>
+            <canvas
+              id="caffeineChart"
+              data-axis-label="咖啡因估算浓度（mg/L）"
+              role="img"
+              aria-label="咖啡因代谢曲线、参考阈值和睡眠目标"
+              aria-describedby="caffeineDescription"
+            ></canvas>
+          </figure>
+          <figure class="model-chart">
+            <figcaption>
+              <h3><i data-lucide="moon"></i>褪黑素与睡眠节律</h3>
+              <span class="small muted"
+                >相对水平 · 非实测<span class="legend-reference"
+                  >自然节律</span
+                ></span
+              >
+            </figcaption>
+            <p class="chart-description" id="melatoninDescription">
+              看睡眠节律有没有后移：棕色实线比灰色虚线越晚上升，表示模型估算的节律越晚。
+            </p>
+            <div class="chart-help" id="melatoninHelp">
+              <button
+                type="button"
+                class="chart-help-trigger"
+                aria-label="怎么看褪黑素与睡眠节律曲线"
+                aria-describedby="melatoninTooltip"
+              >
+                <i data-lucide="circle-help"></i><span>怎么看这张图</span>
+              </button>
+              <div
+                class="chart-tooltip"
+                id="melatoninTooltip"
+                role="tooltip"
+                hidden
+              >
+                <dl>
+                  <dt><span class="line-key melatonin-key"></span>棕色实线</dt>
+                  <dd>
+                    计入已记录咖啡因后的褪黑素相对水平。上升更晚表示模型中的节律后移；低于灰线表示模型中的水平被压低。
+                  </dd>
+                  <dt><span class="line-key reference-key"></span>灰色虚线</dt>
+                  <dd>
+                    不计入咖啡因影响时的模型自然节律，用来对照，不是你的身体实测基线。
+                  </dd>
+                  <dt>数字代表什么</dt>
+                  <dd>
+                    纵轴 0–100
+                    只是相对刻度，不是血液浓度、睡眠时长或入睡概率。曲线升高不表示此刻一定能睡着。
+                  </dd>
+                </dl>
+              </div>
+            </div>
+            <canvas
+              id="melatoninChart"
+              data-axis-label="褪黑素相对水平（0–100）"
+              role="img"
+              aria-label="褪黑素自然节律与计入咖啡因后的估算曲线"
+              aria-describedby="melatoninDescription"
+            ></canvas>
+          </figure>
+          <figure class="model-chart">
+            <figcaption>
+              <h3><i data-lucide="activity"></i>清醒度变化</h3>
+              <span class="small muted"
+                >相对指数 · 非实测<span class="legend-reference"
+                  >昼夜节律基线</span
+                ></span
+              >
+            </figcaption>
+            <p class="chart-description" id="alertnessDescription">
+              看清醒与困倦的变化趋势：实线越高，模型估算越清醒；越低，估算越困倦。
+            </p>
+            <div class="chart-help" id="alertnessHelp">
+              <button
+                type="button"
+                class="chart-help-trigger"
+                aria-label="怎么看清醒度变化曲线"
+                aria-describedby="alertnessTooltip"
+              >
+                <i data-lucide="circle-help"></i><span>怎么看这张图</span>
+              </button>
+              <div
+                class="chart-tooltip"
+                id="alertnessTooltip"
+                role="tooltip"
+                hidden
+              >
+                <dl>
+                  <dt>
+                    <span class="line-key alertness-key"></span>浅棕色实线
+                  </dt>
+                  <dd>
+                    综合昼夜节律、已记录咖啡因、起床时间和小睡设置后的估算指数。
+                  </dd>
+                  <dt><span class="line-key reference-key"></span>灰色虚线</dt>
+                  <dd>
+                    单独的昼夜节律起伏，未叠加咖啡因、持续清醒和小睡的影响。
+                  </dd>
+                  <dt>不是睡眠评分</dt>
+                  <dd>
+                    纵轴 0–100
+                    不是实测分数，也不能判断实际睡眠质量。模型假设起床后持续清醒，只计入设置的小睡，不自动模拟夜间睡眠恢复。
+                  </dd>
+                </dl>
+              </div>
+            </div>
+            <canvas
+              id="alertnessChart"
+              data-axis-label="清醒度相对指数（0–100）"
+              role="img"
+              aria-label="清醒度估算曲线与昼夜节律基线"
+              aria-describedby="alertnessDescription"
+            ></canvas>
+          </figure>
+          <p class="small muted">
+            清醒度曲线假设起床后持续清醒，只计入已设置的小睡，不自动模拟夜间睡眠恢复。
+          </p>
+        </section>
+      </section>
+      <section id="page-review" class="page" hidden>
+        <div class="page-heading">
+          <div>
+            <p class="eyebrow">留意自己的节奏</p>
+            <h1>每一次调整，都有迹可循。</h1>
+          </div>
+          <button class="button secondary" id="reviewSleep">
+            <i data-lucide="plus"></i>睡眠反馈
+          </button>
+        </div>
+        <div class="review-metrics" id="reviewMetrics"></div>
+        <div class="section-heading">
+          <h2>最近 14 天</h2>
+          <span class="small muted">空白表示没有记录</span>
+        </div>
+        <div id="historyList"></div>
+      </section>
+      <section id="page-settings" class="page settings-page" hidden>
+        <div class="page-heading">
+          <div>
+            <p class="eyebrow">按自己的需要</p>
+            <h1>偏好与数据</h1>
+          </div>
+        </div>
+        <section
+          class="settings-section"
+          aria-labelledby="reactionSettingsTitle"
+        >
+          <div class="section-heading">
+            <h2 id="reactionSettingsTitle">饮用反应小档案</h2>
+            <button class="text-button" id="editReaction">
+              <i data-lucide="pencil"></i
+              ><span id="editReactionLabel">开始自测</span>
+            </button>
+          </div>
+          <p id="reactionStatus" class="muted"></p>
+          <dl id="reactionAnswers" class="reaction-answers"></dl>
+          <p class="small muted" id="reactionPredictionNote"></p>
+          <button class="text-button" id="reviewReaction" hidden>
+            <i data-lucide="sliders-horizontal"></i>查看并应用自测建议
+          </button>
+        </section>
+        <section class="settings-section">
+          <h2>代谢档案</h2>
+          <p class="muted" id="parameterSource"></p>
+          <p class="muted profile-intro">
+            可以通过饮用反应自测选择初始估算参数，也可以自行选择。高级参数与基因报告可在下方设置；这些都不是身体实测。
+          </p>
+          <form id="profileForm">
+            <label
+              >估算方式<select id="profileMode">
+                <option value="default">不了解，先用默认估算</option>
+                <option value="cautious">保守一些，按较慢代谢估算</option>
+                <option value="report">我有基因报告，按报告设置</option>
+                <option value="manual" id="manualProfileOption" hidden>
+                  当前使用高级参数
+                </option>
+              </select></label
+            >
+            <div id="geneChoices" hidden>
+              <p class="small muted">
+                仅按已有报告选择，未检测的位点留为“不清楚”。以下解释描述的是原模型映射，不是基因诊断。
+              </p>
+              <div class="profile-fields">
+                <label
+                  >咖啡因代谢速度<select id="profileCyp">
+                    <option value="">不清楚，使用默认</option>
+                    <option value="AA">AA · 模型代谢较快</option>
+                    <option value="AC">AC · 模型代谢中等</option>
+                    <option value="CC">CC · 模型代谢较慢</option></select
+                  ><small>CYP1A2 · rs762551</small></label
+                >
+                <label
+                  >睡眠参考阈值<select id="profileAdor">
+                    <option value="">不清楚，使用默认</option>
+                    <option value="TT">TT · 原模型阈值较高</option>
+                    <option value="CT">CT · 原模型阈值中等</option>
+                    <option value="CC">CC · 原模型阈值较低</option></select
+                  ><small>ADORA2A · rs5751876</small></label
+                >
+                <label
+                  >代谢速度微调<select id="profileAhr">
+                    <option value="">不清楚，使用默认</option>
+                    <option value="TT">TT · 模型代谢稍慢</option>
+                    <option value="GT">GT · 不作额外调整</option>
+                    <option value="GG">GG · 模型代谢稍快</option></select
+                  ><small>AHR · rs4410790</small></label
+                >
+                <label
+                  >代谢速度辅助项<select id="profileAbcg2">
+                    <option value="">不清楚，使用默认</option>
+                    <option value="AA">AA · 模型代谢稍快</option>
+                    <option value="AG">AG · 不作额外调整</option>
+                    <option value="GG">GG · 模型代谢稍慢</option></select
+                  ><small>ABCG2 · rs1481012</small></label
+                >
+                <label
+                  >生物钟节律<select id="profilePer1">
+                    <option value="">不清楚，使用默认</option>
+                    <option value="AA">AA · 模型节律提前</option>
+                    <option value="AG">AG · 不作额外调整</option>
+                    <option value="GG">GG · 模型节律推后</option></select
+                  ><small>PER1 · rs7221412</small></label
+                >
+              </div>
+            </div>
+            <div class="profile-summary" aria-live="polite">
+              <strong id="profileSummaryTitle"></strong>
+              <p class="small muted" id="profileSummaryNote"></p>
+            </div>
+            <div class="form-actions">
+              <button type="submit" class="button primary" id="saveProfile">
+                <i data-lucide="check"></i>保存档案
+              </button>
+            </div>
+          </form>
+          <details class="advanced-parameters">
+            <summary>高级参数<i data-lucide="chevron-down"></i></summary>
+            <form id="parameterForm" class="form-grid">
+              <label
+                >半衰期（小时）<input
+                  id="halfLife"
+                  type="number"
+                  min="2"
+                  max="15"
+                  step="0.01"
+                  required /></label
+              ><label
+                >参考阈值（mg/L）<input
+                  id="threshold"
+                  type="number"
+                  min="0.1"
+                  max="5"
+                  step="0.1"
+                  required
+              /></label>
+              <label
+                >生物钟偏移（分钟）<input
+                  id="dlmoOffset"
+                  type="number"
+                  min="-180"
+                  max="180"
+                  step="1"
+                  required
+              /></label>
+              <div class="form-actions">
+                <button class="button secondary" type="submit">
+                  <i data-lucide="check"></i>保存参数</button
+                ><button type="button" class="text-button" id="resetParameters">
+                  恢复默认
+                </button>
+              </div>
+            </form>
+            <p class="small muted">
+              默认参数是模型假设，不表示已知你的基因型。睡眠反馈仅作记录，不会自动调整参数。
+            </p>
+            <p class="small muted">
+              生物钟偏移以模型的 21:00 褪黑素起始时间为基准；基因导入沿用旧版
+              PER1 映射。
+            </p>
+          </details>
+          <details>
+            <summary>
+              导入已有基因档案<i data-lucide="chevron-down"></i>
+            </summary>
+            <p class="small muted">
+              沿用旧版位点映射，只用于探索性估算；原始报告在本机解析。
+            </p>
+            <label class="button secondary file-label"
+              ><i data-lucide="upload"></i>选择基因报告<input
+                type="file"
+                id="geneFile"
+                accept=".txt,text/plain"
+            /></label>
+            <p id="geneResult" class="small" role="status"></p>
+          </details>
+        </section>
+        <section class="settings-section">
+          <div class="section-heading">
+            <h2>我的饮品</h2>
+            <button class="text-button" id="addCustom">
+              <i data-lucide="plus"></i>添加饮品
+            </button>
+          </div>
+          <div id="customList"></div>
+        </section>
+        <section class="settings-section">
+          <h2>数据备份</h2>
+          <p class="muted">
+            记录保存在当前浏览器。更换设备或清除网站数据前，请导出备份。
+          </p>
+          <div class="form-actions">
+            <button class="button secondary" id="exportJson">
+              <i data-lucide="download"></i>完整备份</button
+            ><button class="button secondary" id="exportCsv">
+              <i data-lucide="file-spreadsheet"></i>导出记录</button
+            ><label class="button secondary file-label"
+              ><i data-lucide="upload"></i>导入备份<input
+                type="file"
+                id="importJson"
+                accept=".json,application/json"
+            /></label>
+          </div>
+          <p class="small muted">
+            支持旧版备份。导入会合并记录，保留现有偏好。
+          </p>
+          <p id="importResult" role="status"></p>
+        </section>
+      </section>
+      <footer>
+        <span>CaffNap</span><span>饮用决策参考 · 非睡眠诊断</span
+        ><span>v2 · 本地预览</span>
+      </footer>
+    </main>
+    <dialog id="orientation" class="onboarding-dialog orientation-dialog" aria-labelledby="welcomeTitle">
+      <div class="dialog-top">
+        <span class="brand small-brand">Caff<span>Nap</span></span>
+        <button class="icon-button" id="orientationClose" aria-label="关闭介绍" title="关闭介绍">
+          <i data-lucide="x"></i>
+        </button>
+      </div>
+      <img class="orientation-art" src="assets/drinks.png" width="150" height="150" alt="咖啡杯与茶杯插画" />
+      <div id="orientationWelcome">
+        <h2 id="welcomeTitle">欢迎来到 CaffNap</h2>
+        <p class="orientation-lead">喜欢的饮品，今晚的好眠。</p>
+        <p class="muted">我们一起看看怎么安排。<br />喝之前可以比较，喝之后可以记录，<br />也能看看什么时候该收杯。</p>
+        <button class="button primary full" id="orientationStart"><i data-lucide="arrow-right"></i>带我看看</button>
+        <button class="text-button" id="orientationExplore">先自己逛逛</button>
+      </div>
+      <div id="orientationInvite" hidden>
+        <h2 id="inviteTitle">再了解你一点？</h2>
+        <p class="muted">聊聊你喝咖啡、茶之后的感受，<br />帮你选一组起步参数。</p>
+        <button class="button primary full" id="orientationSurvey"><i data-lucide="arrow-right"></i>好，试试看</button>
+        <button class="text-button" id="orientationDefault">先用默认值</button>
+      </div>
+      <p class="small muted orientation-note">预测只是参考，也记得留意自己的感受。</p>
+    </dialog>
+    <dialog
+      id="onboarding"
+      aria-labelledby="onboardingTitle"
+      class="onboarding-dialog"
+    >
+      <div class="dialog-top">
+        <span class="brand small-brand">Caff<span>Nap</span></span
+        ><button class="text-button" id="skipGuide">
+          稍后再说<i data-lucide="x"></i>
+        </button>
+      </div>
+      <img
+        src="assets/drinks.png"
+        width="180"
+        height="180"
+        class="onboarding-art"
+        alt="咖啡杯与茶杯插画"
+      />
+      <div id="guideStepOne">
+        <p class="eyebrow">今日记录 · 1 / 2</p>
+        <h2 id="onboardingTitle">你今晚，打算几点睡？</h2>
+        <p class="muted">确认今晚的安排，再记录今天的选择。</p>
+        <label class="sr-only" for="guideTarget">今晚打算几点睡</label
+        ><input id="guideTarget" type="time" value="23:00" required /><button
+          class="button primary full"
+          id="guideNext"
+        >
+          继续记录<i data-lucide="arrow-right"></i>
+        </button>
+        <button class="text-button daily-survey-entry" id="dailySurvey">
+          <i data-lucide="clipboard-list"></i
+          ><span id="dailySurveyLabel">选填：饮用反应自测</span>
+        </button>
+      </div>
+      <div id="guideSurvey" hidden>
+        <p class="eyebrow" id="surveyProgress">02 / 03 · 饮用反应小档案</p>
+        <progress
+          id="surveyProgressBar"
+          max="5"
+          value="1"
+          aria-label="自测进度"
+        ></progress>
+        <h2 id="surveyTitle" tabindex="-1"></h2>
+        <p class="small muted">
+          回想最近一个月。咖啡、茶、能量饮料等都算；没有把握可选“不确定”。
+        </p>
+        <form id="surveyForm">
+          <fieldset
+            class="survey-options"
+            id="surveyOptions"
+            aria-labelledby="surveyTitle"
+          ></fieldset>
+          <div class="form-actions">
+            <button type="button" class="text-button" id="surveyBack">
+              <i data-lucide="arrow-left"></i>上一步
+            </button>
+            <button type="submit" class="button primary" id="surveyNext">
+              下一题<i data-lucide="arrow-right"></i>
+            </button>
+          </div>
+        </form>
+        <button class="text-button survey-skip" id="surveySkip">
+          跳过自测
+        </button>
+      </div>
+      <div id="guideSurveyResult" hidden>
+        <p class="eyebrow">饮用反应与预测起点 · 尚未保存</p>
+        <h2 id="surveyResultTitle" tabindex="-1"></h2>
+        <dl id="surveyResultRows" class="reaction-answers"></dl>
+        <p class="small muted" id="surveyResultNote"></p>
+        <section class="survey-prediction" aria-labelledby="surveyPresetTitle">
+          <h3 id="surveyPresetTitle"></h3>
+          <p id="surveyPresetReason"></p>
+          <p class="small muted" id="surveyPresetParameters"></p>
+          <label class="survey-apply">
+            <input type="checkbox" id="surveyApply" aria-describedby="surveyApplyNote" />
+            <span>将这组参数用于预测</span>
+          </label>
+          <p class="small muted" id="surveyApplyNote" aria-live="polite"></p>
+        </section>
+        <p class="small" id="surveySaveError" role="alert" hidden></p>
+        <div class="form-actions">
+          <button class="text-button" id="surveyResultBack">
+            <i data-lucide="arrow-left"></i>修改答案
+          </button>
+          <button class="button primary" id="surveySave">
+            <i data-lucide="check"></i
+            ><span id="surveySaveLabel">保存并继续</span>
+          </button>
+        </div>
+        <button class="text-button survey-skip" id="surveyResultSkip">
+          暂不保存
+        </button>
+      </div>
+      <div id="guideStepTwo" hidden>
+        <p class="eyebrow">今日记录 · 2 / 2</p>
+        <h2 id="guideActionTitle">你现在想做什么？</h2>
+        <div class="guide-choices">
+          <button id="guidePlan">
+            <i data-lucide="coffee"></i
+            ><span
+              ><strong>正在考虑喝一杯</strong
+              ><small>看看当前选择与其他选项</small></span
+            ><i data-lucide="arrow-right"></i></button
+          ><button id="guideRecord">
+            <i data-lucide="plus"></i
+            ><span
+              ><strong>已经喝过了</strong
+              ><small>留下今天的实际摄入</small></span
+            ><i data-lucide="arrow-right"></i>
+          </button>
+          <button id="guideSleep">
+            <i data-lucide="moon"></i
+            ><span
+              ><strong>补记昨晚睡眠</strong
+              ><small>留下实际入睡和起床时间</small></span
+            ><i data-lucide="arrow-right"></i>
+          </button>
+        </div>
+        <div class="form-actions">
+          <button class="text-button" id="guideBack">
+            <i data-lucide="arrow-left"></i>上一步</button
+          ><button class="text-button" id="guideEmpty">
+            今天暂时没喝，先看看
+          </button>
+        </div>
+      </div>
+      <p class="privacy-note">
+        <i data-lucide="lock-keyhole"></i>无需账号 · 记录保存在本机
+      </p>
+    </dialog>
+    <dialog id="drinkDialog" aria-labelledby="drinkTitle" class="drink-dialog">
+      <div class="dialog-top">
+        <div>
+          <p class="eyebrow" id="drinkEyebrow">饮前比较</p>
+          <h2 id="drinkTitle">想喝哪一杯？</h2>
+        </div>
+        <button
+          class="icon-button"
+          data-close="drinkDialog"
+          aria-label="关闭饮品选择"
+          title="关闭"
+        >
+          <i data-lucide="x"></i>
+        </button>
+      </div>
+      <div id="drinkPicker">
+        <div class="search-box">
+          <i data-lucide="search"></i
+          ><label class="sr-only" for="drinkSearch">搜索饮品或品牌</label
+          ><input
+            id="drinkSearch"
+            type="search"
+            placeholder="搜索饮品或品牌"
+            autocomplete="off"
+          />
+        </div>
+        <div class="filter-row">
+          <label class="sr-only" for="brandFilter">品牌筛选</label
+          ><select id="brandFilter">
+            <option value="">全部品牌</option></select
+          ><span class="small muted" id="drinkResultCount" role="status"></span>
+        </div>
+        <div id="drinkResults" class="drink-results"></div>
+        <button class="text-button" id="pickerCustom">
+          <i data-lucide="plus"></i>没找到？添加自己的饮品
+        </button>
+      </div>
+      <form id="drinkForm" hidden>
+        <button type="button" class="text-button" id="changeDrink">
+          <i data-lucide="arrow-left"></i>重新选择
+        </button>
+        <div class="selected-drink" id="selectedDrink"></div>
+        <div class="form-grid">
+          <label
+            >分量（份）<input
+              id="drinkCups"
+              type="number"
+              min="0.01"
+              max="10"
+              step="any"
+              value="1"
+              required /></label
+          ><label>日期<input id="drinkDate" type="date" required /></label
+          ><label>时间<input id="drinkTime" type="time" required /></label>
+        </div>
+        <p class="small muted" id="drinkSource"></p>
+        <p class="form-error" id="drinkError" role="alert"></p>
+        <button type="submit" class="button primary full" id="drinkSubmit">
+          看看不同选择<i data-lucide="arrow-right"></i>
+        </button>
+      </form>
+      <div id="comparison" hidden>
+        <div class="comparison-heading">
+          <button class="text-button" id="backToDrink">
+            <i data-lucide="arrow-left"></i>调整这杯</button
+          ><span class="small muted" id="compareTarget"></span>
+        </div>
+        <p class="small muted">目标时间的咖啡因估算残留 · 已计入此前记录</p>
+        <div id="compareOptions"></div>
+        <p class="small muted">
+          区间只反映饮品含量范围，不是睡眠时间或个人代谢的置信区间。即使低于模型参考值，也不保证不影响睡眠。
+        </p>
+        <p id="compareMessage" class="comparison-message" role="status"></p>
+        <div class="form-actions">
+          <button class="button primary" id="confirmConsumed">
+            <i data-lucide="check"></i>实际喝过，确认记录</button
+          ><button class="button secondary" id="finishCompare">先不记录</button>
+        </div>
+      </div>
+    </dialog>
+    <dialog id="sleepDialog" aria-labelledby="sleepTitle">
+      <div class="dialog-top">
+        <h2 id="sleepTitle">留下一晚的实际感受</h2>
+        <button
+          class="icon-button"
+          data-close="sleepDialog"
+          aria-label="关闭睡眠反馈"
+          title="关闭"
+        >
+          <i data-lucide="x"></i>
+        </button>
+      </div>
+      <form id="sleepForm">
+        <div class="form-grid">
+          <label>哪一晚<input type="date" id="sleepDate" required /></label
+          ><label
+            >实际入睡<input
+              type="time"
+              id="sleepBed"
+              value="23:30"
+              required /></label
+          ><label
+            >次日起床<input type="time" id="sleepWake" value="07:00" required
+          /></label>
+        </div>
+        <p class="small muted">
+          凌晨入睡也归入前一晚。反馈只用于回顾，不自动校准代谢。
+        </p>
+        <p class="form-error" id="sleepError" role="alert"></p>
+        <button class="button primary full" type="submit">
+          <i data-lucide="check"></i>保存睡眠反馈
+        </button>
+      </form>
+    </dialog>
+    <dialog id="customDialog" aria-labelledby="customTitle">
+      <div class="dialog-top">
+        <h2 id="customTitle">添加自己的饮品</h2>
+        <button
+          class="icon-button"
+          data-close="customDialog"
+          aria-label="关闭自定义饮品"
+          title="关闭"
+        >
+          <i data-lucide="x"></i>
+        </button>
+      </div>
+      <form id="customForm">
+        <label
+          >饮品名称<input
+            id="customName"
+            maxlength="60"
+            required
+            placeholder="例如：家里的手冲"
+        /></label>
+        <div class="form-grid">
+          <label
+            >咖啡因（mg / 份）<input
+              id="customMg"
+              type="number"
+              min="0"
+              max="2000"
+              step="1"
+              required
+              placeholder="包装标注或估算值" /></label
+          ><label
+            >规格<input
+              id="customSpec"
+              maxlength="60"
+              placeholder="例如：250 ml"
+          /></label>
+        </div>
+        <p class="small muted">自定义数值会标注为个人提供。</p>
+        <button class="button primary full" type="submit">
+          <i data-lucide="plus"></i>保存饮品
+        </button>
+      </form>
+    </dialog>
+    <div id="announcements" class="sr-only" role="status"></div>
+    <div class="notifications" id="notifications">
+      <div class="toast" id="toast" hidden>
+        <span id="toastText"></span>
+        <button class="icon-button" id="dismissToast" aria-label="关闭提示" title="关闭提示"><i data-lucide="x"></i></button>
+      </div>
+      <div class="toast undo-notice" id="undoNotice" hidden>
+        <span id="undoText"></span>
+        <button id="undoDelete">撤销删除</button>
+        <button class="icon-button" id="dismissUndo" aria-label="关闭撤销提示，保留删除" title="保留删除并关闭"><i data-lucide="x"></i></button>
       </div>
     </div>
-
-    <!-- 摄入记录 -->
-    <div class="card a-doses">
-      <h2><span class="dot" style="background:var(--orange)"></span>今日咖啡因摄入</h2>
-      <div id="doseList"></div>
-      <button class="btn ghost" id="addDose" style="width:100%;">＋ 添加一杯</button>
-    </div>
-
-    <!-- 小睡 -->
-    <div class="card a-nap">
-      <h2><span class="dot" style="background:var(--purple)"></span>咖啡小睡（可选）</h2>
-      <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;">
-        <label class="chk" style="margin-bottom:8px;"><input type="checkbox" id="napOn"> 今天做了小睡</label>
-        <div class="fld" style="flex:1;min-width:100px;"><label>开始时间</label><input type="time" id="napT" value="14:10"></div>
-        <div class="fld" style="flex:1;min-width:120px;"><label>时长</label>
-          <select id="napD">
-            <option value="15">15 min（经典咖啡小睡）</option>
-            <option value="20" selected>20 min</option>
-            <option value="30">30 min</option>
-            <option value="60">60 min</option>
-          </select></div>
-        <div class="fld" style="flex:1;min-width:100px;"><label>起床时间（锚定睡眠压力）</label><input type="time" id="wakeT" value="07:00"></div>
-      </div>
-    </div>
-
-    <!-- 宵禁反推 -->
-    <div class="card a-curfew">
-      <h2><span class="dot" style="background:var(--red)"></span>宵禁反推</h2>
-      <div class="grid" style="align-items:end;">
-        <div class="fld"><label>目标入睡时间</label><input type="time" id="targetBed" value="23:00"></div>
-        <div class="fld"><label>最后一杯最晚（按所选饮品 1 杯）</label>
-          <div style="font-size:26px;font-weight:700;color:var(--orange);font-variant-numeric:tabular-nums;" id="lastCall">—</div></div>
-      </div>
-      <div class="note" id="lastCallNote"></div>
-    </div>
-
-    <!-- 代谢档案 -->
-    <div class="card a-geno">
-      <h2><span class="dot" style="background:var(--blue)"></span>代谢档案</h2>
-      <div class="grid">
-        <div class="fld"><label>CYP1A2 rs762551（决定半衰期）</label>
-          <select id="cyp">
-            <option value="AA">AA · 快代谢（t½≈3.2h）</option>
-            <option value="AC" selected>AC · 中代谢（t½≈4.5h）</option>
-            <option value="CC">CC · 慢代谢（t½≈7.5h）</option>
-          </select></div>
-        <div class="fld"><label>ADORA2A rs5751876（决定睡眠阈值）</label>
-          <select id="ador">
-            <option value="TT">TT · 敏感（阈值 1.3 mg/L）</option>
-            <option value="CT" selected>CT · 中等（阈值 1.0 mg/L）</option>
-            <option value="CC">CC · 钝感（阈值 0.8 mg/L）</option>
-          </select></div>
-        <div class="fld"><label>AHR rs4410790</label>
-          <select id="ahr">
-            <option value="TT">TT</option>
-            <option value="GT" selected>GT</option>
-            <option value="GG">GG · 诱导强</option>
-          </select></div>
-        <div class="fld"><label>ABCG2 rs1481012</label>
-          <select id="abcg2">
-            <option value="AA">AA</option>
-            <option value="AG" selected>AG</option>
-            <option value="GG">GG</option>
-          </select></div>
-      </div>
-      <div style="display:flex;gap:18px;margin-top:12px;flex-wrap:wrap;">
-        <label class="chk"><input type="checkbox" id="smoke"> 吸烟（代谢加速）</label>
-        <label class="chk"><input type="checkbox" id="oc"> 口服避孕药/妊娠</label>
-      </div>
-      <div class="stat-row" style="margin-top:10px;"><span>个人化修正（来自实际睡眠反馈）</span><b id="stCalib">未校准</b></div>
-      <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:14px;">
-        <label class="btn ghost" for="geneFile" style="cursor:pointer;display:inline-block;">🧬 导入基因报告（23andMe / 微基因 txt）</label>
-        <input type="file" id="geneFile" accept=".txt,text/plain" style="display:none">
-        <div id="geneStatus" style="font-size:13px;color:var(--sub);margin-top:10px;line-height:1.7;"></div>
-      </div>
-    </div>
-  </div>
-
-  <!-- 曲线图 -->
-  <div class="card">
-    <h2><span class="dot" style="background:var(--blue)"></span>血药浓度曲线</h2>
-    <svg id="chartCaf" viewBox="0 0 560 200" width="100%"></svg>
-  </div>
-  <div class="card">
-    <h2><span class="dot" style="background:var(--purple)"></span>褪黑素节律（虚线 = 无咖啡因自然节律）</h2>
-    <svg id="chartMel" viewBox="0 0 560 190" width="100%"></svg>
-  </div>
-  <div class="card">
-    <h2><span class="dot" style="background:var(--green)"></span>昼夜节律 & 睡眠压力（双过程模型）</h2>
-    <svg id="chartAlert" viewBox="0 0 560 190" width="100%"></svg>
-    <div class="stat-row"><span>今日午后低谷（预计）</span><b id="stDip">—</b></div>
-    <div class="stat-row"><span>夜间最低清醒度（预计）</span><b id="stNight">—</b></div>
-  </div>
-
-  <div class="note">
-    模型：一房室一级消除，C(t)=Σ(mg/42)×1.15×2^(−Δt/t½)。双过程清醒度 = 昼夜节律基线 + 咖啡因加成(≤+28) − 腺苷压力(清醒每小时+4，小睡每分钟清1.2)，节律基线含 15:30 午后低谷与夜间下滑。半衰期由 CYP1A2 主导，AHR/ABCG2 每等位微调 ±5–10%，吸烟 ×0.7，避孕药/妊娠 ×1.5。DLMO = 23:00−2h，18:00–01:00 摄入按 200mg→推迟 40min 相位延迟，咖啡因在血期间压制分泌幅度 30%。小睡结束晚于 15:00 按 (结束−15h)×(时长/30)×30min 推迟入睡（上限 90min）。录入「实际几点睡」后，系统按数值微分把残差折算成半衰期偏移，用指数滑动平均（α=0.4，限幅 ±2h）逐步修正个人 t½。所有数据仅存于本机浏览器（localStorage），不上传。基因报告导入仅在本机解析目标位点，原文件不出设备。个体差异 ±1–2h，本工具不构成医疗建议。
-  </div>
-</section>
-
-<!-- ==================== 统计 ==================== -->
-<section id="tab-stats" hidden>
-
-  <!-- 睡眠反馈 -->
-  <div class="card">
-    <h2><span class="dot" style="background:var(--green)"></span>睡眠反馈 · 校准个人代谢</h2>
-    <div class="result-sub" style="margin-bottom:10px;">输入昨晚实际情况，系统会把「预测 vs 实际」的偏差折算成你的个人半衰期修正，越录越准。</div>
-    <div class="grid" style="grid-template-columns:1fr 1fr 1fr;align-items:end;">
-      <div class="fld"><label>日期（哪晚）</label><input type="date" id="fbDate"></div>
-      <div class="fld"><label>实际几点睡</label><input type="time" id="fbBed" value="23:30"></div>
-      <div class="fld"><label>实际几点起</label><input type="time" id="fbWake" value="07:00"></div>
-    </div>
-    <button class="btn" id="fbSubmit" style="margin-top:12px;width:100%;">记录并校准</button>
-    <div id="fbResult" style="font-size:13px;color:var(--sub);margin-top:10px;line-height:1.7;"></div>
-  </div>
-
-  <!-- 统计概览 -->
-  <div class="card">
-    <h2><span class="dot" style="background:var(--orange)"></span>概览</h2>
-    <div class="stat-row"><span>记录天数</span><b id="sumDays">—</b></div>
-    <div class="stat-row"><span>连续记录</span><b id="sumStreak">—</b></div>
-    <div class="stat-row"><span>日均咖啡因</span><b id="sumMg">—</b></div>
-    <div class="stat-row"><span>平均预测入睡</span><b id="sumPred">—</b></div>
-    <div class="stat-row"><span>平均实际入睡（反馈）</span><b id="sumActual">—</b></div>
-    <div class="stat-row"><span>平均起床（反馈）</span><b id="sumWake">—</b></div>
-  </div>
-
-  <!-- 热力图 -->
-  <div class="card">
-    <h2><span class="dot" style="background:var(--orange)"></span>咖啡因热力图
-      <span class="spacer"></span>
-      <span class="seg" id="hmSeg">
-        <button data-range="12" class="on">近 12 周</button>
-        <button data-range="52">近一年</button>
-      </span>
-    </h2>
-    <div class="hm-wrap"><div class="hm" id="heatmap"></div></div>
-    <div class="hm-legend">
-      少 <span class="hm-cell"></span><span class="hm-cell l1"></span><span class="hm-cell l2"></span><span class="hm-cell l3"></span><span class="hm-cell l4"></span> 多
-      <span style="margin-left:10px;">按每日咖啡因总量（mg）分档</span>
-    </div>
-  </div>
-</section>
-
-<!-- ==================== 数据 ==================== -->
-<section id="tab-data" hidden>
-
-  <!-- 自定义饮品 -->
-  <div class="card">
-    <h2><span class="dot" style="background:var(--blue)"></span>自定义饮品</h2>
-    <div class="result-sub" style="margin-bottom:10px;">官方库没有的饮品（如速溶、瓶装）可以加在这里，会并入「品牌 → 自定义」选择器。</div>
-    <div class="grid" style="grid-template-columns:1.4fr 1fr;">
-      <div class="fld"><label>名称 *</label><input type="text" id="ubName" placeholder="如：三合一速溶"></div>
-      <div class="fld"><label>咖啡因（mg/杯）*</label><input type="number" id="ubMg" min="0" max="600" step="1" placeholder="75"></div>
-      <div class="fld"><label>类型</label>
-        <select id="ubType">
-          <option value="美式">美式/黑咖</option>
-          <option value="拿铁">拿铁/奶咖</option>
-          <option value="浓缩">浓缩</option>
-          <option value="速溶咖啡">速溶/冻干</option>
-          <option value="奶茶">奶茶/其他</option>
-        </select></div>
-      <div class="fld"><label>规格说明（可选）</label><input type="text" id="ubSpec" placeholder="如：1 条 2g"></div>
-    </div>
-    <button class="btn" id="ubAdd" style="margin-top:12px;width:100%;">＋ 保存饮品</button>
-    <div id="ubList" style="margin-top:10px;"></div>
-  </div>
-
-  <!-- 导出 / 导入 -->
-  <div class="card">
-    <h2><span class="dot" style="background:var(--purple)"></span>数据导出 / 导入</h2>
-    <div class="result-sub" style="margin-bottom:10px;">全部数据只存在本机浏览器，换设备/清缓存前请先导出备份。</div>
-    <div style="display:flex;gap:8px;flex-wrap:wrap;">
-      <button class="btn ghost" id="expJson">⬇️ 导出完整备份（JSON）</button>
-      <button class="btn ghost" id="expCsv">⬇️ 导出历史记录（CSV）</button>
-      <label class="btn ghost" for="impFile" style="cursor:pointer;">⬆️ 导入备份（JSON）</label>
-      <input type="file" id="impFile" accept=".json,application/json" style="display:none">
-    </div>
-    <div id="impResult" style="font-size:13px;color:var(--sub);margin-top:10px;line-height:1.7;"></div>
-    <div class="note">说明：JSON 备份包含摄入历史、睡眠反馈、个人校准、自定义饮品和基因档案，可完整恢复；CSV 为按日汇总表格，适合用 Excel 分析，不支持回导。</div>
-  </div>
-</section>
-
-<footer>CaffNap v1.2 · 生活方式记录工具 · 数据仅存本机</footer>
-
-<canvas id="shareCanvas" width="900" height="1125" style="display:none"></canvas>
-<script src="app.js"></script>
-</body>
+  </body>
 </html>

@@ -1,925 +1,1781 @@
 "use strict";
-/* CaffNap v1.2 — 纯本地、零依赖（plain script，file:// 双击可用） */
-const $ = id => document.getElementById(id);
-
-// ==================== 工具 ====================
-const toMin = s => { const [h, m] = s.split(":").map(Number); return h * 60 + m; };
-const toHM = t => {
-  t = ((Math.round(t) % 1440) + 1440) % 1440;
-  const h = Math.floor(t / 60), m = t % 60;
-  return String(h).padStart(2, "0") + ":" + String(m).padStart(2, "0");
-};
-const dayKey = d => {
-  const p = n => String(n).padStart(2, "0");
-  return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
-};
-const todayKey = () => dayKey(new Date());
-const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
-const lsGet = (k, fb) => { try { const v = JSON.parse(localStorage.getItem(k)); return v === null || v === undefined ? fb : v; } catch (e) { return fb; } };
-const lsSet = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} };
-function download(filename, blob) {
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = filename;
-  document.body.appendChild(a); a.click();
-  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 800);
-}
-
-// ==================== 存储键 ====================
-const LS = {
-  day: "caffnap_v1", geno: "caffnap_geno_v1", hist: "caffnap_history_v2",
-  sleep: "caffnap_sleep_v1", calib: "caffnap_calib_v1",
-  custom: "caffnap_custom_bevs_v1", tab: "caffnap_tab_v1"
-};
-
-// ==================== 饮品库 ====================
-const GENERIC_BEVS = [
-  { k: "espresso", label: "浓缩 espresso", mg: 60 },
-  { k: "americano", label: "美式", mg: 150 },
-  { k: "filter", label: "手冲/大美式", mg: 200 },
-  { k: "latte", label: "拿铁", mg: 75 },
-  { k: "tea", label: "茶", mg: 45 },
-  { k: "decaf", label: "低因/其他", mg: 0 }
-];
-const DB_META = window.CAFFNAP_DB || {};
-let DB_ITEMS = DB_META.items || [];
-if (!DB_ITEMS.length) console.warn("CaffNap: db.js 未加载，使用通用估算饮品");
-let UBEVS = lsGet(LS.custom, []);   // 自定义饮品
-function allBevs() { return (DB_ITEMS.length ? DB_ITEMS : GENERIC_BEVS).concat(UBEVS); }
-function bevMid(b) { return b.mg !== undefined ? b.mg : (b.mg_min + b.mg_max) / 2; }
-const TYPE_MAP = {
-  "美式类": "美式", "美式": "美式", "冷萃类": "美式", "冷萃": "美式",
-  "滴滤咖啡": "美式", "冰咖啡": "美式",
-  "拿铁类": "拿铁", "拿铁": "拿铁", "摩卡": "拿铁", "星冰乐": "拿铁",
-  "浓缩咖啡": "浓缩", "浓缩": "浓缩",
-  "速溶咖啡": "速溶咖啡", "速溶": "速溶咖啡", "冻干": "速溶咖啡",
-  "奶茶": "奶茶", "轻因系列": "奶茶", "纯茶": "奶茶", "特调": "奶茶",
-  "茶咖": "奶茶", "轻咖": "奶茶", "其他非咖啡类": "奶茶", "无咖啡": "奶茶", "果茶": "奶茶"
-};
-function normType(b) {
-  if (!b.brand && !b.category) return "通用";         // 兜底通用饮品
-  return TYPE_MAP[b.category] || "奶茶";
-}
-
-// ==================== 状态 ====================
-let state = { doses: [], napOn: false, napT: "14:10", napD: 20, wakeT: "07:00", targetBed: "23:00", day: new Date().toDateString() };
-Object.assign(state, lsGet(LS.day, {}));
-let HIST = lsGet(LS.hist, {});       // { "2026-11-09": { mg, doses:[...], pred, target } }
-let SLEEP = lsGet(LS.sleep, {});     // { "2026-11-09": { bed:"01:30", wake:"08:00" } }
-let CALIB = lsGet(LS.calib, { offset: 0, nights: 0, log: [] });
-let dlmoOff = 0;                     // PER1 rs7221412 的 DLMO 偏移（分钟）
-
-// 跨天归档：state 里残留的不是今天的剂量 → 归档到历史后清空
-(function rollover() {
-  const today = new Date().toDateString();
-  if (state.day && state.day !== today && state.doses && state.doses.length) {
-    const d = new Date(state.day);
-    if (!isNaN(d)) {
-      const k = dayKey(d);
-      const mg = state.doses.reduce((s, x) => s + doseMg(x), 0);
-      HIST[k] = Object.assign({ mg: Math.round(mg), doses: state.doses, pred: null, target: toMin(state.targetBed || "23:00") }, HIST[k] || {});
-      HIST[k].mg = Math.round(mg); HIST[k].doses = state.doses;
-      lsSet(LS.hist, HIST);
+(function () {
+  const $ = (id) => document.getElementById(id),
+    M = CaffNapModel,
+    S = CaffNapStorage,
+    R = CaffNapReactions;
+  const catalog = (window.CAFFNAP_DB?.items || []).filter(S.validBev);
+  const store = S.create(
+    {
+      getItem: (k) => window.localStorage.getItem(k),
+      setItem: (k, v) => window.localStorage.setItem(k, v),
+    },
+    catalog,
+  );
+  let data = store.load(),
+    blocked = data === null;
+  data ||= S.defaults();
+  let mode = "plan",
+    selected = null,
+    editingId = null,
+    draft = null,
+    options = [],
+    chosen = "original",
+    customFromPicker = false;
+  const undoRecords = [];
+  let noticeReturnTo;
+  let featureTour;
+  const escape = (value) =>
+    String(value ?? "").replace(
+      /[&<>"']/g,
+      (c) =>
+        ({
+          "&": "&amp;",
+          "<": "&lt;",
+          ">": "&gt;",
+          '"': "&quot;",
+          "'": "&#39;",
+        })[c],
+    );
+  const icon = (name) => '<i data-lucide="' + name + '"></i>';
+  const icons = () => window.lucide?.createIcons();
+  const nowTime = (date) =>
+    new Date(date).toLocaleTimeString("en-GB", {
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    });
+  const drinks = () => [...catalog, ...data.custom];
+  const active = () => data.records.filter((r) => !r.deletedAt);
+  const recordsOn = (date) =>
+    active()
+      .filter((r) => S.dayKey(r.consumedAt) === date)
+      .sort((a, b) => Date.parse(a.consumedAt) - Date.parse(b.consumedAt));
+  const dose = (r) => M.caffeine(r.beverage).mid * r.cups;
+  const name = (b) => b.drink || b.label;
+  const range = (v, cups = 1) => {
+    const lo = Math.floor(v.low * cups),
+      hi = Math.ceil(v.high * cups);
+    return lo === hi ? String(lo) : lo + "–" + hi;
+  };
+  const target = () => M.targetDate(data.profile.targetBed);
+  let cutoffBeverage =
+    catalog.find((b) => /美式/.test(b.drink || b.label)) || catalog[0];
+  const napKey = () => S.dayKey(M.eveningFor(target()));
+  const napSettings = () =>
+    data.naps[napKey()] || {
+      enabled: false,
+      start: "14:10",
+      duration: 20,
+      wake: "07:00",
+    };
+  function dateTimeLabel(date) {
+    if (!date) return "暂无法估算";
+    const d = new Date(date),
+      day = S.dayKey(d),
+      today = S.dayKey(new Date());
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const prefix =
+      day === today
+        ? "今天"
+        : day === S.dayKey(tomorrow)
+          ? "明天"
+          : `${d.getMonth() + 1}/${d.getDate()}`;
+    return prefix + " " + nowTime(d);
+  }
+  const targetLabel = () =>
+    (S.dayKey(target()) === S.dayKey(new Date()) ? "今天 " : "明天 ") +
+    data.profile.targetBed;
+  const text = (id, value) => {
+    $(id).textContent = value;
+  };
+  function warning() {
+    $("storageWarning").hidden = !store.error && !blocked;
+    text(
+      "storageWarning",
+      blocked
+        ? "已保存的数据无法读取，已暂停写入以保护原数据。请先导出原始备份，再检查文件。"
+        : "本次数据未能保存到浏览器，刷新可能丢失。请先导出完整备份。",
+    );
+  }
+  function save() {
+    if (blocked) {
+      warning();
+      return false;
     }
-    state.doses = [];
+    const success = store.save(data);
+    warning();
+    return success;
   }
-  state.day = today;
-  state.doses = (state.doses || []).filter(d => d.day === today);
-})();
-function save() { lsSet(LS.day, state); }
-
-// ==================== 参数（基因 → 半衰期/阈值 + 个人修正） ====================
-function baseTh() {
-  let th = { AA: 3.2, AC: 4.5, CC: 7.5 }[$("cyp").value];
-  th *= { TT: 1.10, GT: 1.0, GG: 0.90 }[$("ahr").value];
-  th *= { AA: 0.95, AG: 1.0, GG: 1.05 }[$("abcg2").value];
-  if ($("smoke").checked) th *= 0.7;
-  if ($("oc").checked) th *= 1.5;
-  return th;
-}
-function getParams() {
-  const base = baseTh();
-  const th = clamp(base + (CALIB.offset || 0), 2.0, 10);
-  const thr = { TT: 1.3, CT: 1.0, CC: 0.8 }[$("ador").value];
-  return { th, thr, base };
-}
-
-// ==================== 药代模型 ====================
-function doseMg(d) { const b = allBevs().find(x => x.k === d.bev); return b ? bevMid(b) * d.cups : 0; }
-function concentration(mg, th, dtH) { return dtH < 0 ? 0 : mg / 42 * 1.15 * Math.pow(2, -dtH / th); }
-function totalC(doses, th, tMin) {
-  return doses.reduce((s, d) => s + concentration(doseMg(d), th, (tMin - toMin(d.time)) / 60), 0);
-}
-function tClear(doses, th, thr) {
-  if (!doses.length) return null;
-  const last = Math.max(...doses.map(d => toMin(d.time)));
-  for (let t = last + 30; t <= last + 1440; t += 2)
-    if (totalC(doses, th, t) <= thr) return t;
-  return null;
-}
-function lastCall(mg, th, thr, targetMin) {
-  const c0 = mg / 42 * 1.15;
-  if (c0 <= thr) return 0;
-  return Math.max(0, targetMin - (th * Math.log2(c0 / thr) * 60 + 30));
-}
-
-// ==================== 双过程模型 ====================
-const CIRC = [[0,45],[4,33],[6,45],[7,72],[9,88],[12,85],[14,78],[15.5,65],[17,80],[19,78],[21,68],[22.5,58],[24,45]];
-function circadian(t) {
-  t = ((t % 24) + 24) % 24;
-  for (let i = 0; i < CIRC.length - 1; i++) {
-    const [t0, v0] = CIRC[i], [t1, v1] = CIRC[i + 1];
-    if (t >= t0 && t <= t1) return v0 + (v1 - v0) * (t - t0) / (t1 - t0);
+  function toast(message) {
+    if (!$("notifications").contains(document.activeElement))
+      noticeReturnTo = document.activeElement;
+    text("toastText", message);
+    $("toast").hidden = false;
+    text("announcements", message);
   }
-  return 45;
-}
-function adenosine(t, wakeMin, napEndMin, napDurMin) {
-  let awake = ((t - wakeMin) % 1440 + 1440) % 1440;
-  let p = Math.min(90, awake / 60 * 4);
-  if (napEndMin !== null && t > napEndMin) p = Math.max(0, p - napDurMin * 1.2);
-  return p;
-}
-
-// ==================== 褪黑素模型 ====================
-function melRaw(rel) {
-  if (rel < -1 || rel >= 8) return 5;
-  if (rel < 0) return 5 + (rel + 1) * 5;
-  if (rel < 2) return 10 + rel * 25;
-  if (rel < 4) return 60 + (rel - 2) * 20;
-  return 100 - (rel - 4) * 22.5;
-}
-
-// 统一预测核心：今日 calc() 与历史校准共用
-function computePrediction(doses, th, thr, napDelayMin) {
-  const tC = tClear(doses, th, thr);
-  const dlmo0 = 21 * 60 + dlmoOff;
-  let delayMin = 0;
-  doses.forEach(d => {
-    const rel = ((toMin(d.time) - dlmo0) % 1440 + 1440) % 1440;
-    const before = rel <= 16 * 60 ? rel - 1440 : rel;
-    if (before >= -300 && before <= 120) delayMin += (doseMg(d) / 200) * 40;
-  });
-  delayMin = Math.min(delayMin, 180);
-  const dlmoEff = dlmo0 + delayMin;
-  const suppress = t => 1 - 0.3 * Math.min(1, totalC(doses, th, t) / thr);
-  const melAt = t => {
-    let rel = ((t - dlmoEff) % 1440 + 1440) % 1440;
-    if (rel > 16 * 60) rel -= 1440;
-    return melRaw(rel) * suppress(t);
-  };
-  let tMel = null;
-  for (let t = 12 * 60; t <= 24 * 60; t += 2) if (melAt(t) >= 10) { tMel = t; break; }
-  let tSleep = null;
-  if (tC !== null && tMel !== null) tSleep = Math.max(tC, tMel) + (napDelayMin || 0);
-  return { tC, tMel, tSleep, dlmo0, dlmoEff, delayMin, melAt };
-}
-
-// ==================== 摄入条目 UI ====================
-function renderDoses() {
-  const box = $("doseList");
-  box.innerHTML = "";
-  const list = allBevs();
-  state.doses.forEach((d, i) => {
-    let cur = list.find(b => b.k === d.bev);
-    if (!cur) { cur = list[0]; d.bev = cur.k; }
-    const curBrand = cur.brand || "通用";
-    const curType = normType(cur);
-
-    const brands = [...new Set(list.map(b => b.brand || "通用"))];
-    const ALL_TYPES = ["美式", "拿铁", "浓缩", "速溶咖啡", "奶茶"];
-    const hasTypes = ALL_TYPES.filter(t => list.some(b => (b.brand || "通用") === curBrand && normType(b) === t));
-    const types = (DB_ITEMS.length || UBEVS.length) && hasTypes.length ? hasTypes : ["通用"];
-    const prods = list.filter(b => (b.brand || "通用") === curBrand && normType(b) === curType);
-
-    const opt = (v, label, sel) => `<option value="${v}" ${sel ? "selected" : ""}>${label}</option>`;
-    const row = document.createElement("div");
-    row.className = "dose-row";
-    row.innerHTML = `
-      <div class="fld f-brand"><label>品牌</label>
-        <select data-i="${i}" class="d-brand">${brands.map(b => opt(b, b, b === curBrand)).join("")}</select></div>
-      <div class="fld f-type"><label>类型</label>
-        <select data-i="${i}" class="d-type">${types.map(t => opt(t, t, t === curType)).join("")}</select></div>
-      <div class="fld f-prod"><label>产品</label>
-        <select data-i="${i}" class="d-bev">${prods.map(b =>
-          opt(b.k, b.drink
-            ? `${b.drink}${b.spec ? "（" + b.spec + "）" : ""}·约${Math.round(bevMid(b))}mg`
-            : `${b.label}（${b.mg}mg）`, b.k === d.bev)).join("")}</select></div>
-      <div class="fld f-cups"><label>杯数</label>
-        <input type="number" data-i="${i}" class="d-cups" value="${d.cups}" min="0.5" max="6" step="0.5"></div>
-      <div class="fld f-time"><label>时间</label>
-        <input type="time" data-i="${i}" class="d-time" value="${d.time}"></div>
-      <button class="del f-del" data-i="${i}" title="删除">×</button>`;
-    box.appendChild(row);
-  });
-
-  box.querySelectorAll(".d-brand").forEach(el => el.addEventListener("change", e => {
-    const i = +e.target.dataset.i;
-    const first = allBevs().find(b => (b.brand || "通用") === e.target.value);
-    if (first) { state.doses[i].bev = first.k; save(); renderDoses(); calc(); }
-  }));
-  box.querySelectorAll(".d-type").forEach(el => el.addEventListener("change", e => {
-    const i = +e.target.dataset.i;
-    const curBrand = (allBevs().find(b => b.k === state.doses[i].bev) || allBevs()[0]).brand || "通用";
-    const first = allBevs().find(b => (b.brand || "通用") === curBrand && normType(b) === e.target.value);
-    if (first) { state.doses[i].bev = first.k; save(); renderDoses(); calc(); }
-  }));
-  box.querySelectorAll(".d-bev,.d-cups,.d-time").forEach(el => el.addEventListener("input", e => {
-    const i = +e.target.dataset.i;
-    if (e.target.classList.contains("d-bev")) state.doses[i].bev = e.target.value;
-    if (e.target.classList.contains("d-cups")) state.doses[i].cups = +e.target.value;
-    if (e.target.classList.contains("d-time")) state.doses[i].time = e.target.value;
-    save(); calc();
-  }));
-  box.querySelectorAll(".del").forEach(b => b.addEventListener("click", e => {
-    state.doses.splice(+e.target.dataset.i, 1); save(); renderDoses(); calc();
-  }));
-}
-
-$("addDose").addEventListener("click", () => {
-  const now = new Date();
-  const hm = String(now.getHours()).padStart(2, "0") + ":" + String(now.getMinutes()).padStart(2, "0");
-  state.doses.push({ bev: DB_ITEMS.length ? "b000" : "americano", cups: 1, time: hm, day: new Date().toDateString() });
-  save(); renderDoses(); calc();
-});
-
-// ==================== 主计算 ====================
-let lastResult = null;   // 供分享卡片 / 日历使用
-
-function calc() {
-  const { th, thr, base } = getParams();
-  const doses = state.doses.filter(d => doseMg(d) > 0);
-  const totalMg = doses.reduce((s, d) => s + doseMg(d), 0);
-
-  // 小睡
-  const napOn = $("napOn").checked;
-  const napStart = toMin($("napT").value), napDur = +$("napD").value;
-  const napEnd = napStart + napDur;
-  let napDelayMin = 0;
-  if (napOn && napEnd > 15 * 60) napDelayMin = Math.min(90, (napEnd - 900) / 60 * (napDur / 30) * 30);
-
-  const pred = computePrediction(doses, th, thr, napDelayMin);
-  const { tC, tMel, tSleep, dlmo0, dlmoEff, delayMin, melAt } = pred;
-
-  // ---- 输出 ----
-  $("bedtime").textContent = tSleep !== null
-    ? toHM(tSleep) + (tSleep >= 1440 ? "（次日）" : "") : "24h 内条件未满足";
-  let subs = [];
-  if (tC !== null) subs.push("咖啡因 " + toHM(tC) + " 达标");
-  if (tMel !== null) subs.push("褪黑素 " + toHM(tMel) + " 达标");
-  if (napDelayMin > 0) subs.push("小睡 +" + Math.round(napDelayMin) + "min");
-  $("bedtimeSub").textContent = subs.join(" · ") || "添加第一杯开始预测";
-  $("stHalf").textContent = CALIB.offset
-    ? `${th.toFixed(1)} h（基因 ${base.toFixed(1)} + 个人 ${CALIB.offset > 0 ? "+" : ""}${CALIB.offset.toFixed(1)}）`
-    : th.toFixed(1) + " h";
-  $("stClear").textContent = tC !== null ? toHM(tC) : "24h 内未达标";
-  $("stDlmo").textContent = toHM(dlmoEff) + (delayMin > 0 ? `（推迟 ${Math.round(delayMin)}min）` : "（未受扰动）");
-  $("stPer1").textContent = { "-60": "AA · 偏晨型（DLMO −1h）", "0": "AG · 标准", "60": "GG · 偏夜型（DLMO +1h）" }[String(dlmoOff)] || "未知（默认标准）";
-  $("stCalib").textContent = CALIB.nights
-    ? `t½ ${CALIB.offset > 0 ? "+" : ""}${CALIB.offset.toFixed(1)} h（已用 ${CALIB.nights} 晚反馈）`
-    : "未校准（去「统计」页录入昨晚睡眠）";
-
-  const badge = $("badge");
-  if (delayMin >= 90 || (tSleep !== null && tSleep > 24 * 60)) {
-    badge.textContent = "高风险：生物钟被明显推迟"; badge.className = "badge risk";
-  } else if (tSleep === null || tSleep > 23 * 60) {
-    badge.textContent = "中风险：晚间饮用"; badge.className = "badge warn";
-  } else {
-    badge.textContent = "低风险：节律基本未受扰"; badge.className = "badge ok";
+  function updateUndo(message) {
+    $("undoNotice").hidden = undoRecords.length === 0;
+    if (undoRecords.length) $("toast").hidden = true;
+    text("undoText", message);
+    text("undoDelete", undoRecords.length > 1 ? `撤销上一条（${undoRecords.length}）` : "撤销删除");
+    text("announcements", message);
   }
-
-  // 宵禁反推
-  const list = allBevs();
-  const selBev = state.doses.length
-    ? (list.find(b => b.k === state.doses[state.doses.length - 1].bev) || list[0])
-    : (list.find(b => b.k === "americano") || list[0]);
-  const selMg = bevMid(selBev);
-  const lc = lastCall(selMg, th, thr, toMin($("targetBed").value));
-  $("lastCall").textContent = toHM(lc);
-  const lowMg = Math.min(...list.map(bevMid).filter(m => m > 0));
-  $("lastCallNote").textContent =
-    `按「${selBev.drink ? (selBev.brand || "") + "·" + selBev.drink : selBev.label}」1 杯（约${Math.round(selMg)}mg）计算。想喝更晚？换最低因选项（约${Math.round(lowMg)}mg）可把宵禁延后约 ` +
-    Math.max(0, Math.round((th * Math.log2((selMg / 42 * 1.15) / thr) - th * Math.log2((lowMg / 42 * 1.15) / thr)) * 60)) +
-    ` 分钟。`;
-
-  lastResult = {
-    tSleep, totalMg, cups: doses.reduce((s, d) => s + d.cups, 0), th, thr,
-    badge: badge.textContent, lastCallMin: lc, targetBed: toMin($("targetBed").value), selMg
-  };
-
-  // 今日入历史（热力图/统计用）
-  const k = todayKey();
-  if (totalMg > 0 || HIST[k]) {
-    HIST[k] = { mg: Math.round(totalMg), doses: state.doses.slice(), pred: tSleep, target: lastResult.targetBed };
-    lsSet(LS.hist, HIST);
+  function focusPageHeading() {
+    const heading = document.querySelector(".page:not([hidden]) h1");
+    heading.tabIndex = -1;
+    heading.focus({ preventScroll: true });
+    return heading;
   }
-
-  const wakeMin = toMin($("wakeT").value);
-  const napEndMin = napOn ? napEnd : null;
-  const alertness = t => {
-    const a = circadian(t) + 28 * Math.min(1, totalC(doses, th, t) / thr) - 0.35 * adenosine(t * 60, wakeMin, napEndMin, napDur);
-    return Math.max(5, Math.min(100, a));
-  };
-  drawCaf(thr, doses, tC, tSleep, napOn ? { s: napStart, e: napEnd, d: napDur } : null);
-  drawMel(dlmo0, dlmoEff, melAt, tSleep);
-  drawAlert(alertness, doses, napOn ? { s: napStart, e: napEnd, d: napDur } : null, tSleep);
-}
-
-// ==================== 图表 ====================
-function drawCaf(thr, doses, tC, tSleep, nap) {
-  const W = 560, H = 200, L = 40, R = 12, T = 12, B = 30;
-  const th = getParams().th;
-  let peak = 0;
-  for (let t = 0; t <= 1440; t += 5) {
-    const c = totalC(doses, th, t);
-    if (c > peak) peak = c;
+  function restoreNoticeFocus() {
+    if (noticeReturnTo?.isConnected && noticeReturnTo.checkVisibility())
+      noticeReturnTo.focus();
+    else focusPageHeading();
   }
-  const cMax = Math.max(peak * 1.15, thr * 1.3, 1);
-  const X = t => L + (W - L - R) * t / 1440;
-  const Y = c => T + (H - T - B) * (1 - c / cMax);
-  let s = "";
-  for (let g = 0; g <= 1440; g += 240)
-    s += `<line x1="${X(g)}" y1="${T}" x2="${X(g)}" y2="${H - B}" stroke="var(--border)"/>`;
-  if (nap) {
-    s += `<rect x="${X(nap.s)}" y="${T}" width="${X(Math.min(nap.e, 1440)) - X(nap.s)}" height="${H - B - T}" fill="var(--purple)" opacity="0.12" rx="4"/>
-          <text x="${(X(nap.s) + X(Math.min(nap.e, 1440))) / 2}" y="${T + 12}" text-anchor="middle" font-size="10" fill="var(--sub)">小睡 ${nap.d}min</text>`;
+  function persisted(message) {
+    const ok = save();
+    render();
+    toast(ok ? message : "仅保留在当前页面，请导出备份。");
+    return ok;
   }
-  doses.forEach(d => {
-    const mg = doseMg(d), h = 12 + Math.min(mg, 400) / 400 * 30;
-    s += `<rect x="${X(toMin(d.time)) - 3}" y="${H - B - h}" width="6" height="${h}" rx="2" fill="var(--orange)" opacity="0.8"/>
-          <text x="${X(toMin(d.time))}" y="${H - B - h - 4}" text-anchor="middle" font-size="9" fill="var(--sub)">${mg}mg</text>`;
-  });
-  s += `<line x1="${L}" y1="${Y(thr)}" x2="${W - R}" y2="${Y(thr)}" stroke="var(--sub)" stroke-dasharray="4 3"/>
-        <text x="${W - R}" y="${Y(thr) - 4}" text-anchor="end" font-size="10" fill="var(--sub)">阈值 ${thr.toFixed(1)} mg/L</text>`;
-  let path = "";
-  for (let i = 0; i <= 240; i++) {
-    const t = 1440 * i / 240;
-    path += (i ? "L" : "M") + X(t).toFixed(1) + " " + Y(totalC(doses, th, t)).toFixed(1) + " ";
+  function showPage(page) {
+    if (!["today", "review", "settings"].includes(page)) page = "today";
+    document.querySelectorAll(".page").forEach((el) => {
+      el.hidden = el.id !== "page-" + page;
+    });
+    document.querySelectorAll("[data-page]").forEach((b) => {
+      b.classList.toggle("active", b.dataset.page === page);
+      if (b.dataset.page === page) b.setAttribute("aria-current", "page");
+      else b.removeAttribute("aria-current");
+    });
+    render();
+    document.title = focusPageHeading().textContent + " · CaffNap";
+    window.scrollTo(0, 0);
   }
-  s += `<path d="${path}" fill="none" stroke="var(--blue)" stroke-width="2.2"/>`;
-  if (tC !== null && tC <= 1440)
-    s += `<circle cx="${X(tC)}" cy="${Y(thr)}" r="4" fill="var(--blue)" opacity="0.4"/>`;
-  if (tSleep !== null && tSleep <= 1440)
-    s += `<circle cx="${X(tSleep)}" cy="${Y(thr)}" r="5" fill="var(--blue)"/>
-          <text x="${X(tSleep)}" y="${Y(thr) + 16}" text-anchor="middle" font-size="11" fill="var(--blue)">${toHM(tSleep)}</text>`;
-  for (let g = 0; g < 1440; g += 240)
-    s += `<text x="${X(g)}" y="${H - 8}" text-anchor="middle" font-size="10" fill="var(--sub)">${g / 60}时</text>`;
-  $("chartCaf").innerHTML = s;
-}
-
-function drawMel(dlmo0, dlmoEff, melAt, tSleep) {
-  const W = 560, H = 190, L = 44, R = 12, T = 12, B = 28;
-  const X = t => L + (W - L - R) * t / 1440;
-  const Y = v => T + (H - T - B) * (1 - v / 100);
-  let s = "";
-  for (let g = 0; g <= 1440; g += 240)
-    s += `<line x1="${X(g)}" y1="${T}" x2="${X(g)}" y2="${H - B}" stroke="var(--border)"/>`;
-  if (dlmo0 !== dlmoEff)
-    s += `<line x1="${X(dlmo0)}" y1="${T}" x2="${X(dlmo0)}" y2="${H - B}" stroke="var(--sub)" stroke-dasharray="3 3"/>
-          <text x="${X(dlmo0)}" y="${H - B - 4}" text-anchor="middle" font-size="9" fill="var(--sub)">自然 ${toHM(dlmo0)}</text>`;
-  s += `<line x1="${L}" y1="${Y(10)}" x2="${W - R}" y2="${Y(10)}" stroke="var(--sub)" stroke-dasharray="4 3"/>
-        <text x="${W - R}" y="${Y(10) - 4}" text-anchor="end" font-size="10" fill="var(--sub)">DLMO 10 pg/mL</text>`;
-  let dRaw = "", dEff = "";
-  for (let i = 0; i <= 240; i++) {
-    const t = 1440 * i / 240;
-    let rel = ((t - dlmoEff) % 1440 + 1440) % 1440;
-    if (rel > 960) rel -= 1440;
-    dRaw += (i ? "L" : "M") + X(t).toFixed(1) + " " + Y(melRaw(rel)).toFixed(1) + " ";
-    dEff += (i ? "L" : "M") + X(t).toFixed(1) + " " + Y(melAt(t)).toFixed(1) + " ";
+  function recordRow(r) {
+    return (
+      '<div class="record-row"><time datetime="' +
+      escape(r.consumedAt) +
+      '">' +
+      nowTime(r.consumedAt) +
+      '</time><span class="drink-tile">' +
+      icon("coffee") +
+      '</span><div class="record-info"><strong>' +
+      escape(name(r.beverage)) +
+      "</strong><p>" +
+      escape(r.beverage.brand || "自定义") +
+      " · " +
+      r.cups +
+      " 份 · 约 " +
+      Math.round(dose(r)) +
+      ' mg</p></div><div class="record-actions"><button class="icon-button" data-repeat="' +
+      escape(r.id) +
+      '" title="再记一杯" aria-label="再记一杯 ' +
+      escape(name(r.beverage)) +
+      '">' +
+      icon("rotate-ccw") +
+      '</button><button class="icon-button" data-edit="' +
+      escape(r.id) +
+      '" title="编辑记录" aria-label="编辑 ' +
+      escape(name(r.beverage)) +
+      '">' +
+      icon("pencil") +
+      '</button><button class="icon-button" data-delete="' +
+      escape(r.id) +
+      '" title="删除记录" aria-label="删除 ' +
+      escape(name(r.beverage)) +
+      '">' +
+      icon("trash-2") +
+      "</button></div></div>"
+    );
   }
-  s += `<path d="${dRaw}" fill="none" stroke="var(--sub)" stroke-width="1.4" stroke-dasharray="5 3" opacity="0.6"/>
-        <path d="${dEff}" fill="none" stroke="var(--purple)" stroke-width="2.2"/>`;
-  if (dlmoEff >= 0 && dlmoEff <= 1440)
-    s += `<circle cx="${X(dlmoEff)}" cy="${Y(10)}" r="4" fill="var(--purple)"/>
-          <text x="${X(dlmoEff)}" y="${Y(10) + 16}" text-anchor="middle" font-size="10" fill="var(--purple)">${toHM(dlmoEff)}</text>`;
-  if (tSleep !== null && tSleep <= 1440)
-    s += `<line x1="${X(tSleep)}" y1="${T}" x2="${X(tSleep)}" y2="${Y(10)}" stroke="var(--purple)" stroke-dasharray="4 3" opacity="0.5"/>`;
-  for (let g = 0; g < 1440; g += 240)
-    s += `<text x="${X(g)}" y="${H - 8}" text-anchor="middle" font-size="10" fill="var(--sub)">${g / 60}时</text>`;
-  s += `<text x="${L - 5}" y="${T + 10}" text-anchor="end" font-size="10" fill="var(--sub)">100</text>
-        <text x="${L - 5}" y="${H - B}" text-anchor="end" font-size="10" fill="var(--sub)">0</text>`;
-  $("chartMel").innerHTML = s;
-}
-
-function drawAlert(alertness, doses, nap, tSleep) {
-  const W = 560, H = 190, L = 40, R = 12, T = 12, B = 28;
-  const X = t => L + (W - L - R) * t / 24;
-  const Y = a => T + (H - T - B) * (1 - a / 100);
-  let s = "";
-  s += `<rect x="${L}" y="${Y(100)}" width="${W - L - R}" height="${Y(60) - Y(100)}" fill="var(--green)" opacity="0.08"/>
-        <rect x="${L}" y="${Y(60)}" width="${W - L - R}" height="${Y(35) - Y(60)}" fill="var(--warn)" opacity="0.10"/>
-        <rect x="${L}" y="${Y(35)}" width="${W - L - R}" height="${Y(5) - Y(35)}" fill="var(--sub)" opacity="0.15"/>`;
-  for (let g = 0; g <= 24; g += 4)
-    s += `<line x1="${X(g)}" y1="${T}" x2="${X(g)}" y2="${H - B}" stroke="var(--border)"/>`;
-  s += `<line x1="${L}" y1="${Y(60)}" x2="${W - R}" y2="${Y(60)}" stroke="var(--sub)" stroke-dasharray="3 3" opacity="0.6"/>
-        <text x="${W - R}" y="${Y(60) - 4}" text-anchor="end" font-size="9" fill="var(--sub)">60</text>
-        <line x1="${L}" y1="${Y(35)}" x2="${W - R}" y2="${Y(35)}" stroke="var(--sub)" stroke-dasharray="3 3" opacity="0.6"/>
-        <text x="${W - R}" y="${Y(35) - 4}" text-anchor="end" font-size="9" fill="var(--sub)">35 困倦</text>`;
-  if (nap) {
-    s += `<rect x="${X(nap.s / 60)}" y="${T}" width="${X(Math.min(nap.e, 1440) / 60) - X(nap.s / 60)}" height="${H - B - T}" fill="var(--purple)" opacity="0.15" rx="4"/>
-          <text x="${(X(nap.s / 60) + X(Math.min(nap.e, 1440) / 60)) / 2}" y="${T + 11}" text-anchor="middle" font-size="9" fill="var(--sub)">小睡</text>`;
+  function renderHome() {
+    const today = S.dayKey(new Date()),
+      rows = recordsOn(today);
+    const relevant = active().filter(
+      (r) => Date.parse(r.consumedAt) <= Date.now(),
+    );
+    const known = rows.length > 0 || relevant.length > 0;
+    const assessment = M.assess(relevant, target(), data.profile);
+    text(
+      "todayDate",
+      new Date().toLocaleDateString("zh-CN", {
+        month: "long",
+        day: "numeric",
+        weekday: "long",
+      }),
+    );
+    $("targetBed").value = data.profile.targetBed;
+    text(
+      "goalDay",
+      S.dayKey(target()) === today ? "今晚的睡眠目标" : "下一次睡眠目标",
+    );
+    const total = rows.reduce((s, r) => s + dose(r), 0);
+    $("dailyMg").innerHTML = rows.length
+      ? Math.round(total) + "<small>mg</small>"
+      : "—";
+    $("targetMg").innerHTML = known
+      ? range(assessment.remaining) + "<small>mg</small>"
+      : "—";
+    text("recordCount", rows.length + " 条记录");
+    if (!rows.length) {
+      text("statusTitle", "还没有今天的记录");
+      text(
+        "statusDescription",
+        relevant.length
+          ? "尚未记录今天的摄入；估算已计入此前记录的残留。"
+          : "尚未记录，不代表没有摄入。可以先比较，也可以补记。",
+      );
+    } else if (assessment.aboveThreshold) {
+      text("statusTitle", "下一杯，可以少一点");
+      text(
+        "statusDescription",
+        "按已记录摄入估算，目标时间的残留高于模型参考值。可以比较少喝一点或暂时不喝。",
+      );
+    } else {
+      text("statusTitle", "今天喝的，记在这里了");
+      text(
+        "statusDescription",
+        "估算残留低于模型参考值，但不代表不会影响睡眠。未记录的饮品尚未计入。",
+      );
+    }
+    text(
+      "modelBasis",
+      data.profile.source +
+        "：半衰期 " +
+        Number(data.profile.halfLife.toFixed(2)) +
+        " 小时，参考阈值 " +
+        data.profile.threshold +
+        " mg/L。沿用旧版一级消除公式，累计此前实际记录；饮品含量按数据库区间计算。",
+    );
+    $("timeline").innerHTML = rows.length
+      ? rows.map(recordRow).join("")
+      : '<div class="empty-state"><div><h3>今天喝过的，还没记下来</h3><p>记下饮品和时间，预测就会一起更新。</p></div></div>';
+    const recent = (data.recent || [])
+      .map(
+        (k) =>
+          drinks().find((b) => b.k === k) ||
+          active().find((r) => r.beverage.k === k)?.beverage,
+      )
+      .filter(Boolean)
+      .slice(0, 3);
+    $("recentDrinks").innerHTML = recent.length
+      ? recent
+          .map(
+            (b) =>
+              '<button class="recent-button" data-recent="' +
+              escape(b.k) +
+              '"><span><strong>' +
+              escape(name(b)) +
+              "</strong><small>" +
+              escape(b.brand || "自定义") +
+              " · 约 " +
+              Math.round(M.caffeine(b).mid) +
+              " mg / 份</small></span>" +
+              icon("arrow-up-right") +
+              "</button>",
+          )
+          .join("")
+      : '<p class="small muted">还没有最近记录。</p>';
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    const sleep = data.sleep[S.dayKey(yesterday)];
+    text(
+      "feedbackPrompt",
+      sleep
+        ? "昨晚 " +
+            sleep.bed +
+            " 入睡，" +
+            sleep.wake +
+            " 起床。已记录，可修改。"
+        : "留下实际睡眠时间，慢慢了解自己的节奏。",
+    );
+    renderPrediction(relevant);
   }
-  doses.forEach(d => {
-    s += `<rect x="${X(toMin(d.time) / 60) - 2}" y="${H - B - 8}" width="4" height="8" rx="1.5" fill="var(--orange)" opacity="0.7"/>`;
-  });
-  let path = "", dipA = 101, dipT = 0, minA = 101, minT = 0;
-  for (let i = 0; i <= 240; i++) {
-    const t = 24 * i / 240, a = alertness(t);
-    path += (i ? "L" : "M") + X(t).toFixed(1) + " " + Y(a).toFixed(1) + " ";
-    if (t >= 13 && t <= 18 && a < dipA) { dipA = a; dipT = t; }
-    if ((t >= 22 || t <= 6) && a < minA) { minA = a; minT = t; }
+  function renderPrediction(records) {
+    const nap = napSettings(),
+      result = M.predict(records, target(), data.profile, nap);
+    text(
+      "predictionContext",
+      result.hasRecords
+        ? "已记录摄入 + 当前小睡设置"
+        : "无摄入记录 · 仅模型基线",
+    );
+    text(
+      "predSleep",
+      result.hasRecords ? dateTimeLabel(result.sleep) : "待记录摄入",
+    );
+    text(
+      "predSleepNote",
+      !result.hasRecords
+        ? "下方显示无摄入假设下的节律"
+        : !result.sleep
+          ? "至次日中午未满足模型条件"
+          : result.sleep > target()
+            ? "晚于睡眠目标约 " +
+              Math.ceil((result.sleep - target()) / 60000) +
+              " 分钟"
+            : "模型条件早于或接近睡眠目标",
+    );
+    text("predClear", result.hasRecords ? dateTimeLabel(result.clear) : "—");
+    text(
+      "predDelay",
+      result.hasRecords ? Math.round(result.delay) + " 分钟" : "—",
+    );
+    text("predNap", Math.round(result.napDelay) + " 分钟");
+    text(
+      "predNapNote",
+      nap.enabled
+        ? nap.start + " 开始 · " + nap.duration + " 分钟"
+        : "未计入小睡",
+    );
+    text("napDay", napKey().slice(5).replace("-", "/"));
+    $("napEnabled").checked = nap.enabled;
+    $("wakeTime").value = nap.wake;
+    $("napStart").value = nap.start;
+    $("napDuration").value = nap.duration;
+    text(
+      "napSummary",
+      nap.enabled
+        ? "小睡结束 " +
+            dateTimeLabel(result.napEnd) +
+            " · 咖啡因仅按实际摄入记录计算。"
+        : "未计入小睡，起床时间仍用于清醒度估算。",
+    );
+    text(
+      "curveRange",
+      dateTimeLabel(result.start) + " 至 " + dateTimeLabel(result.end),
+    );
+    renderCutoff(records);
+    drawCharts(result);
   }
-  s += `<path d="${path}" fill="none" stroke="var(--green)" stroke-width="2.2"/>`;
-  if (dipA < 101)
-    s += `<circle cx="${X(dipT)}" cy="${Y(dipA)}" r="3.5" fill="var(--green)"/>
-          <text x="${X(dipT)}" y="${Y(dipA) + 15}" text-anchor="middle" font-size="9" fill="var(--sub)">午后低谷 ${toHM(dipT * 60)}</text>`;
-  if (minA < 101)
-    s += `<circle cx="${X(minT)}" cy="${Y(minA)}" r="3.5" fill="var(--green)"/>
-          <text x="${X(minT)}" y="${Y(minA) - 8}" text-anchor="middle" font-size="9" fill="var(--sub)">夜间最低 ${toHM(minT * 60)}</text>`;
-  if (tSleep !== null && tSleep <= 1440)
-    s += `<line x1="${X(tSleep / 60)}" y1="${T}" x2="${X(tSleep / 60)}" y2="${H - B}" stroke="var(--blue)" stroke-dasharray="4 3" opacity="0.6"/>
-          <text x="${X(tSleep / 60)}" y="${H - 8}" text-anchor="middle" font-size="9" fill="var(--blue)">${toHM(tSleep)} 可入睡</text>`;
-  for (let g = 0; g < 24; g += 4)
-    s += `<text x="${X(g)}" y="${H - 8}" text-anchor="middle" font-size="10" fill="var(--sub)">${g}时</text>`;
-  s += `<text x="${L - 5}" y="${T + 10}" text-anchor="end" font-size="10" fill="var(--sub)">100</text>
-        <text x="${L - 5}" y="${H - B}" text-anchor="end" font-size="10" fill="var(--sub)">0</text>`;
-  $("chartAlert").innerHTML = s;
-  $("stDip").textContent = toHM(dipT * 60) + "（清醒度 " + Math.round(dipA) + "）";
-  $("stNight").textContent = toHM(minT * 60) + "（清醒度 " + Math.round(minA) + "）";
-}
-
-// ==================== 基因报告导入（23andMe / 微基因，纯本地解析） ====================
-const GENO_LOCI = [
-  { rsid: "rs762551",  gene: "CYP1A2",  allele: "A", key: "cyp",   map: { 2: "AA", 1: "AC", 0: "CC" },
-    pheno: g => ({ AA: "快代谢 t½≈3.2h", AC: "中代谢 t½≈4.5h", CC: "慢代谢 t½≈7.5h" }[g]) },
-  { rsid: "rs5751876", gene: "ADORA2A", allele: "T", key: "ador",  map: { 2: "TT", 1: "CT", 0: "CC" },
-    pheno: g => ({ TT: "高敏感（阈值 1.3）", CT: "中等（阈值 1.0）", CC: "钝感（阈值 0.8）" }[g]) },
-  { rsid: "rs4410790", gene: "AHR",     allele: "G", key: "ahr",   map: { 2: "GG", 1: "GT", 0: "TT" },
-    pheno: g => ({ GG: "诱导强 · 清除偏快", GT: "标准", TT: "诱导弱 · 清除偏慢 10%" }[g]) },
-  { rsid: "rs1481012", gene: "ABCG2",   allele: "A", key: "abcg2", map: { 2: "AA", 1: "AG", 0: "GG" },
-    pheno: g => ({ AA: "外排快 · 清除偏快 5%", AG: "标准", GG: "外排慢 · 清除偏慢 5%" }[g]) },
-  { rsid: "rs7221412", gene: "PER1",    allele: "A", key: "per1",  map: { 2: "AA", 1: "AG", 0: "GG" },
-    pheno: g => ({ AA: "偏晨型 · DLMO 提前 1h", AG: "标准节律", GG: "偏夜型 · DLMO 推迟 1h" }[g]) }
-];
-
-function parseGeneText(text) {
-  const byRs = Object.fromEntries(GENO_LOCI.map(l => [l.rsid, l]));
-  const found = {}, missing = [];
-  for (const raw of text.split(/\r?\n/)) {
-    if (!raw || raw.startsWith("#")) continue;
-    const p = raw.trim().split(/\s+/);
-    if (p.length < 4) continue;
-    const locus = byRs[p[0]];
-    if (!locus || found[locus.key]) continue;
-    const gt = p[3].toUpperCase();
-    if (gt.length < 2 || gt.includes("-") || gt.includes("N")) { missing.push(locus.gene + "（无检出）"); continue; }
-    const count = Math.min(2, (gt.split("").filter(c => c === locus.allele).length));
-    const g = locus.map[count];
-    if (g) found[locus.key] = { g, rsid: locus.rsid, gene: locus.gene, pheno: locus.pheno(g) };
+  function drawCharts(result) {
+    const colors = getComputedStyle(document.documentElement);
+    if (!$("page-today").hidden) {
+      drawModelChart(
+        "caffeineChart",
+        result,
+        "concentration",
+        null,
+        colors.getPropertyValue("--green").trim(),
+        Math.max(
+          2,
+          data.profile.threshold * 1.2,
+          ...result.samples.map((s) => s.concentration),
+        ),
+        data.profile.threshold,
+      );
+      drawModelChart(
+        "melatoninChart",
+        result,
+        "melatonin",
+        "natural",
+        colors.getPropertyValue("--brown").trim(),
+        100,
+      );
+      drawModelChart(
+        "alertnessChart",
+        result,
+        "alertness",
+        "circadian",
+        colors.getPropertyValue("--brown-soft").trim(),
+        100,
+      );
+    }
   }
-  for (const l of GENO_LOCI) if (!found[l.key] && !missing.some(m => m.startsWith(l.gene))) missing.push(l.gene);
-  return { found, missing };
-}
-function applyGeno(found) {
-  if (found.cyp)   $("cyp").value = found.cyp.g;
-  if (found.ador)  $("ador").value = found.ador.g;
-  if (found.ahr)   $("ahr").value = found.ahr.g;
-  if (found.abcg2) $("abcg2").value = found.abcg2.g;
-  dlmoOff = found.per1 ? ({ AA: -60, AG: 0, GG: 60 }[found.per1.g] ?? 0) : 0;
-}
-function showGenoStatus(found, missing, fromCache) {
-  const rows = Object.values(found)
-    .map(v => `<div>✅ <b>${v.gene}</b> ${v.rsid} = <b>${v.g}</b> · ${v.pheno}</div>`).join("");
-  const miss = missing.length
-    ? `<div style="color:var(--warn)">⚠️ 未检出：${missing.join("、")}（保持默认档位）</div>` : "";
-  $("geneStatus").innerHTML = (fromCache ? "🧬 已恢复上次导入的基因报告" : "🧬 导入成功（文件仅在本地解析，未上传）")
-    + rows + miss;
-}
-$("geneFile").addEventListener("change", e => {
-  const file = e.target.files[0];
-  if (!file) return;
-  file.text().then(text => {
-    const { found, missing } = parseGeneText(text);
-    if (Object.keys(found).length === 0) {
-      $("geneStatus").innerHTML = "⚠️ 未找到任何目标位点——请确认是 23andMe / 微基因 原始数据 txt";
+  function renderCutoff(records = active()) {
+    text("cutoffTarget", "目标 " + targetLabel());
+    text(
+      "cutoffDrink",
+      cutoffBeverage
+        ? (cutoffBeverage.brand || "自定义") + " · " + name(cutoffBeverage)
+        : "选择饮品",
+    );
+    if (!cutoffBeverage || !$("cutoffCups").checkValidity()) {
+      text("cutoffTime", "—");
+      text("cutoffNote", "请选择饮品，并填写 0.01–10 份。");
       return;
     }
-    applyGeno(found);
-    lsSet(LS.geno, found);
-    showGenoStatus(found, missing, false);
-    calc();
-  });
-  e.target.value = "";
-});
-(function restoreGeno() {
-  const saved = lsGet(LS.geno, null);
-  if (saved && saved.cyp) { applyGeno(saved); showGenoStatus(saved, [], true); }
-})();
-
-// ==================== 选项卡 ====================
-document.querySelectorAll(".tabs button").forEach(b => b.addEventListener("click", () => {
-  document.querySelectorAll(".tabs button").forEach(x => x.classList.toggle("on", x === b));
-  ["today", "stats", "data"].forEach(t => { $("tab-" + t).hidden = t !== b.dataset.tab; });
-  lsSet(LS.tab, b.dataset.tab);
-  if (b.dataset.tab === "stats") renderStats();
-  if (b.dataset.tab === "data") renderUbevs();
-}));
-(function restoreTab() {
-  const t = lsGet(LS.tab, "today");
-  if (t !== "today") {
-    const btn = document.querySelector(`.tabs button[data-tab="${t}"]`);
-    if (btn) btn.click();
+    const cups = Number($("cutoffCups").value);
+    const result = M.cutoff(
+      records,
+      cutoffBeverage,
+      cups,
+      target(),
+      data.profile,
+    );
+    text(
+      "cutoffLabel",
+      result.status === "passed" ? "估算截止时间已过" : "估算最晚饮用时间",
+    );
+    text(
+      "cutoffTime",
+      result.at
+        ? dateTimeLabel(result.at)
+        : result.status === "no-caffeine"
+          ? "无咖啡因截止限制"
+          : "当前条件下无余量",
+    );
+    text(
+      "cutoffNote",
+      result.status === "no-room"
+        ? "已有摄入在目标时刻已达到参考阈值，无法为追加咖啡因反推出时间。可先不追加，并核对记录与目标。"
+        : result.status === "no-caffeine"
+          ? "这杯标注为 0 mg，不增加模型咖啡因残留；已有摄入仍可能影响结果。"
+          : (result.status === "passed"
+              ? "可以比较更少分量或低因选项。"
+              : "仅为这杯反推，不会新增摄入记录。") +
+            " 本次按 " +
+            Math.ceil(M.caffeine(cutoffBeverage).high * cups) +
+            " mg 计算。",
+    );
   }
-})();
-
-// ==================== 历史：热力图 + 概览 ====================
-let hmRange = 12;
-function mgLevel(mg) {
-  if (!mg || mg <= 0) return 0;
-  if (mg < 50) return 1;
-  if (mg < 150) return 2;
-  if (mg < 300) return 3;
-  return 4;
-}
-function renderHeatmap() {
-  const hm = $("heatmap");
-  hm.innerHTML = "";
-  const today = new Date(); today.setHours(0, 0, 0, 0);
-  // 起始：n 周前那一周的周一
-  const start = new Date(today);
-  start.setDate(start.getDate() - (hmRange - 1) * 7 - ((start.getDay() + 6) % 7));
-  const tKey = todayKey();
-  let lastMonth = -1;
-  for (let w = 0; w < hmRange; w++) {
-    const col = document.createElement("div");
-    col.className = "hm-col";
-    for (let d = 0; d < 7; d++) {
-      const date = new Date(start);
-      date.setDate(start.getDate() + w * 7 + d);
-      const cell = document.createElement("div");
-      cell.className = "hm-cell";
-      if (date > today) {
-        cell.classList.add("future");
-      } else {
-        const k = dayKey(date);
-        const rec = HIST[k];
-        const lv = rec ? mgLevel(rec.mg) : 0;
-        if (lv) cell.classList.add("l" + lv);
-        if (k === tKey) cell.classList.add("today");
-        const slp = SLEEP[k];
-        let tip = `${k.slice(5)} · ` + (rec ? `${rec.mg}mg` : "无记录");
-        if (rec && rec.pred !== null && rec.pred !== undefined) tip += ` · 预测入睡 ${toHM(rec.pred)}`;
-        if (slp) tip += ` · 实际 ${slp.bed}睡 ${slp.wake}起`;
-        cell.title = tip;
-      }
-      col.appendChild(cell);
+  function drawModelChart(id, result, key, reference, color, max, threshold) {
+    const canvas = $(id),
+      ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const w = Math.max(240, canvas.clientWidth),
+      h = 210,
+      ratio = window.devicePixelRatio || 1;
+    canvas.width = Math.round(w * ratio);
+    canvas.height = Math.round(h * ratio);
+    ctx.scale(ratio, ratio);
+    const left = 34,
+      right = w - 12,
+      top = 40,
+      bottom = h - 32;
+    const x = (at) =>
+      left +
+      ((at - result.start) / (result.end - result.start)) * (right - left);
+    const y = (v) => bottom - (v / max) * (bottom - top);
+    ctx.font = "11px sans-serif";
+    const colors = getComputedStyle(document.documentElement);
+    ctx.fillStyle = "#52635a";
+    ctx.textAlign = "left";
+    ctx.font = "12px sans-serif";
+    ctx.fillText(canvas.dataset.axisLabel, left, 16);
+    ctx.font = "11px sans-serif";
+    if (result.napStart) {
+      ctx.fillStyle = colors.getPropertyValue("--lavender").trim();
+      const start = Math.max(left, x(result.napStart)),
+        end = Math.min(right, x(result.napEnd));
+      if (end > start) ctx.fillRect(start, top, end - start, bottom - top);
     }
-    hm.appendChild(col);
-    lastMonth = start.getMonth();
-  }
-}
-$("hmSeg").querySelectorAll("button").forEach(b => b.addEventListener("click", () => {
-  $("hmSeg").querySelectorAll("button").forEach(x => x.classList.toggle("on", x === b));
-  hmRange = +b.dataset.range;
-  renderHeatmap();
-}));
-
-function renderStats() {
-  const keys = Object.keys(HIST).filter(k => HIST[k] && HIST[k].mg > 0);
-  $("sumDays").textContent = keys.length + " 天";
-  // 连续记录：从今天/昨天往前数
-  let streak = 0;
-  const cur = new Date(); cur.setHours(0, 0, 0, 0);
-  if (!HIST[todayKey()]) cur.setDate(cur.getDate() - 1);
-  while (HIST[dayKey(cur)] && HIST[dayKey(cur)].mg > 0) { streak++; cur.setDate(cur.getDate() - 1); }
-  $("sumStreak").textContent = streak + " 天";
-  $("sumMg").textContent = keys.length ? Math.round(keys.reduce((s, k) => s + HIST[k].mg, 0) / keys.length) + " mg/天" : "—";
-  const preds = keys.map(k => HIST[k].pred).filter(v => v !== null && v !== undefined);
-  $("sumPred").textContent = preds.length ? toHM(preds.reduce((a, b) => a + b, 0) / preds.length) : "—";
-  const sk = Object.keys(SLEEP);
-  const bedMins = sk.map(k => { let m = toMin(SLEEP[k].bed); return m < 720 ? m + 1440 : m; });
-  $("sumActual").textContent = sk.length ? toHM(bedMins.reduce((a, b) => a + b, 0) / bedMins.length) + `（${sk.length} 晚）` : "—";
-  $("sumWake").textContent = sk.length ? toHM(sk.reduce((s, k) => s + toMin(SLEEP[k].wake), 0) / sk.length) : "—";
-  renderHeatmap();
-}
-
-// ==================== 睡眠反馈 → t½ 个人化校准 ====================
-$("fbSubmit").addEventListener("click", () => {
-  const dateStr = $("fbDate").value;
-  const bedStr = $("fbBed").value, wakeStr = $("fbWake").value;
-  const out = $("fbResult");
-  if (!dateStr || !bedStr || !wakeStr) { out.textContent = "⚠️ 请填完整日期和睡/起时间。"; return; }
-
-  SLEEP[dateStr] = { bed: bedStr, wake: wakeStr };
-  lsSet(LS.sleep, SLEEP);
-
-  const rec = HIST[dateStr];
-  if (!rec || !rec.doses || !rec.doses.length) {
-    out.innerHTML = `✅ 已记录 ${dateStr} 的睡眠。<br>⚠️ 那天没有咖啡因摄入记录，无法用于校准 t½（已保留睡眠数据）。`;
-    renderStats(); return;
-  }
-  // 用基因基础值（不含个人修正）重算那晚预测
-  const { thr } = getParams();
-  const base = baseTh();
-  const pred = computePrediction(rec.doses, base, thr, 0);
-  if (pred.tSleep === null) {
-    out.innerHTML = `✅ 已记录睡眠。<br>⚠️ 那天模型 24h 内未达入睡条件，跳过本次校准。`;
-    renderStats(); return;
-  }
-  let actual = toMin(bedStr);
-  if (actual < 12 * 60) actual += 1440;   // 凌晨入睡记到前一晚
-  const residMin = actual - pred.tSleep;
-
-  if (pred.tMel > pred.tC) {
-    out.innerHTML = `✅ 已记录睡眠。那晚预测 ${toHM(pred.tSleep)} / 实际 ${bedStr}。<br>
-      ℹ️ 那晚的限制条件是<b>褪黑素节律</b>而非咖啡因清除，残差 ${residMin >= 0 ? "+" : ""}${Math.round(residMin)}min 不计入 t½ 校准（避免污染代谢估计）。`;
-    renderStats(); return;
-  }
-  // 数值微分：tClear 对 th 的斜率（分钟/小时）
-  const t1 = tClear(rec.doses, base, thr), t2 = tClear(rec.doses, base + 0.5, thr);
-  const slope = (t2 - t1) / 0.5;   // min per hour
-  if (!slope || slope < 1) {
-    out.innerHTML = `✅ 已记录睡眠。<br>⚠️ 灵敏度不足，跳过本次校准。`;
-    renderStats(); return;
-  }
-  const dTh = clamp(residMin / slope, -1.5, 1.5);
-  const before = CALIB.offset || 0;
-  CALIB.offset = clamp(0.6 * before + 0.4 * dTh, -2, 2);
-  CALIB.nights = (CALIB.nights || 0) + 1;
-  CALIB.log = (CALIB.log || []).concat([{ date: dateStr, pred: Math.round(pred.tSleep), actual: Math.round(actual), dTh: +dTh.toFixed(2), offset: +CALIB.offset.toFixed(2) }]).slice(-30);
-  lsSet(LS.calib, CALIB);
-
-  out.innerHTML = `✅ ${dateStr}：预测入睡 ${toHM(pred.tSleep)} / 实际 ${bedStr}（残差 ${residMin >= 0 ? "+" : ""}${Math.round(residMin)}min）<br>
-    → 当晚折算 t½ 偏移 ${dTh >= 0 ? "+" : ""}${dTh.toFixed(2)}h，滑动平均后个人修正 <b>${CALIB.offset >= 0 ? "+" : ""}${CALIB.offset.toFixed(2)}h</b>（共 ${CALIB.nights} 晚）。预测已更新。`;
-  calc();
-  renderStats();
-});
-
-// ==================== 自定义饮品 ====================
-function renderUbevs() {
-  const box = $("ubList");
-  if (!UBEVS.length) { box.innerHTML = `<div class="note" style="margin-top:4px;">还没有自定义饮品。</div>`; return; }
-  box.innerHTML = "";
-  UBEVS.forEach(b => {
-    const row = document.createElement("div");
-    row.className = "ubev-row";
-    row.innerHTML = `<span class="name">${b.drink}${b.spec ? "（" + b.spec + "）" : ""}</span>
-      <span class="mg">${b.mg}mg · ${b.category}</span>
-      <button class="del" data-k="${b.k}" title="删除">×</button>`;
-    box.appendChild(row);
-  });
-  box.querySelectorAll(".del").forEach(el => el.addEventListener("click", () => {
-    UBEVS = UBEVS.filter(b => b.k !== el.dataset.k);
-    lsSet(LS.custom, UBEVS);
-    // 如果今日剂量引用了被删的饮品，回落到第一个
-    const list = allBevs();
-    state.doses.forEach(d => { if (!list.find(b => b.k === d.bev)) d.bev = list[0].k; });
-    save(); renderUbevs(); renderDoses(); calc();
-  }));
-}
-$("ubAdd").addEventListener("click", () => {
-  const name = $("ubName").value.trim();
-  const mg = +$("ubMg").value;
-  if (!name) { $("ubName").focus(); return; }
-  if (!(mg >= 0 && mg <= 600)) { $("ubMg").focus(); return; }
-  UBEVS.push({
-    k: "u" + Date.now().toString(36),
-    brand: "自定义", category: $("ubType").value,
-    drink: name, spec: $("ubSpec").value.trim(), mg: Math.round(mg)
-  });
-  lsSet(LS.custom, UBEVS);
-  $("ubName").value = ""; $("ubMg").value = ""; $("ubSpec").value = "";
-  renderUbevs(); renderDoses(); calc();
-});
-
-// ==================== 导出 / 导入 ====================
-$("expJson").addEventListener("click", () => {
-  const backup = {
-    app: "caffnap", version: "1.2", exportedAt: new Date().toISOString(),
-    history: HIST, sleep: SLEEP, calib: CALIB, custom: UBEVS,
-    geno: lsGet(LS.geno, null), today: state
-  };
-  download(`caffnap-backup-${todayKey()}.json`,
-    new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" }));
-});
-$("expCsv").addEventListener("click", () => {
-  const rows = [["date", "total_mg", "predicted_bed", "actual_bed", "wake", "doses"]];
-  Object.keys(HIST).sort().forEach(k => {
-    const h = HIST[k], s = SLEEP[k] || {};
-    const det = (h.doses || []).map(d => {
-      const b = allBevs().find(x => x.k === d.bev);
-      return `${d.time} ${b ? (b.drink || b.label) : d.bev} x${d.cups}`;
-    }).join(" | ");
-    rows.push([k, h.mg, h.pred != null ? toHM(h.pred) : "", s.bed || "", s.wake || "", det]);
-  });
-  const csv = "﻿" + rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\r\n");
-  download(`caffnap-history-${todayKey()}.csv`, new Blob([csv], { type: "text/csv" }));
-});
-$("impFile").addEventListener("change", e => {
-  const file = e.target.files[0];
-  if (!file) return;
-  file.text().then(text => {
-    let data;
-    try { data = JSON.parse(text); } catch (err) {
-      $("impResult").textContent = "⚠️ 文件不是有效的 JSON。"; return;
+    for (let i = 0; i <= 4; i++) {
+      const value = (max * i) / 4;
+      ctx.strokeStyle = "#e0e7e2";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(left, y(value));
+      ctx.lineTo(right, y(value));
+      ctx.stroke();
+      ctx.fillStyle = "#697770";
+      ctx.textAlign = "right";
+      ctx.fillText(
+        max <= 10 ? value.toFixed(1) : Math.round(value),
+        left - 7,
+        y(value) + 4,
+      );
     }
-    if (!data || data.app !== "caffnap") {
-      $("impResult").textContent = "⚠️ 不是 CaffNap 备份文件。"; return;
+    function line(field, stroke, dashed = false) {
+      ctx.strokeStyle = stroke;
+      ctx.lineWidth = dashed ? 1.5 : 2.5;
+      ctx.setLineDash(dashed ? [5, 5] : []);
+      ctx.beginPath();
+      result.samples.forEach((s, i) =>
+        i ? ctx.lineTo(x(s.at), y(s[field])) : ctx.moveTo(x(s.at), y(s[field])),
+      );
+      ctx.stroke();
+      ctx.setLineDash([]);
     }
-    let added = 0, skipped = 0;
-    Object.entries(data.history || {}).forEach(([k, v]) => {
-      if (HIST[k]) skipped++; else { HIST[k] = v; added++; }
-    });
-    let sAdded = 0;
-    Object.entries(data.sleep || {}).forEach(([k, v]) => {
-      if (!SLEEP[k]) { SLEEP[k] = v; sAdded++; }
-    });
-    (data.custom || []).forEach(b => {
-      if (b && b.k && !UBEVS.find(x => x.k === b.k) && !DB_ITEMS.find(x => x.k === b.k)) UBEVS.push(b);
-    });
-    if (data.calib && (data.calib.nights || 0) > (CALIB.nights || 0)) CALIB = data.calib;
-    if (data.geno && !lsGet(LS.geno, null)) { lsSet(LS.geno, data.geno); applyGeno(data.geno); showGenoStatus(data.geno, [], true); }
-    lsSet(LS.hist, HIST); lsSet(LS.sleep, SLEEP); lsSet(LS.custom, UBEVS); lsSet(LS.calib, CALIB);
-    $("impResult").innerHTML = `✅ 导入完成：新增 ${added} 天摄入记录${skipped ? `（跳过 ${skipped} 天已存在）` : ""}、${sAdded} 晚睡眠记录、${(data.custom || []).length} 条自定义饮品（去重后）。`;
-    renderDoses(); calc(); renderUbevs();
-  });
-  e.target.value = "";
-});
-
-// ==================== 分享吐槽卡片（Canvas → PNG） ====================
-// 项目二维码：离线生成后内嵌（零依赖，file:// 可用），扫码跳转线上版
-const QR_B64 = "iVBORw0KGgoAAAANSUhEUgAAAQgAAAEIAQMAAACZOPi8AAAABlBMVEUaGi7///9tKekOAAABDUlEQVR42u2ZSw4DMQxCUe9/Z7pIjJ1W1ez74pFG88kKEbCJ/FS6K9grtGo9rjf3V7/0VP+0QgVaI+HjKxGPxY4Qo9/ReCwsNj0uHo6E+EAJqx+n/IL1I/5yXFh/OUih0tMUcb80Q1SiWgpC5MdWUsd247tEfji3IOJ0rFB+bF093HZxBolHd2Eq480fYj+2u9PYLHqes4fLpvkITkw9Lc1Ip1qIMPt1RThKWWsTEft1d+oRpwlfiPPLwqHhGRqC5MdMPHp2kaD7Jc/75qm22Pn2w1dKV7j5x8jHFPcl5+tzotstCT0//aIMGI+Rj1WUCj9v8NAOUfMxHQeXExjB83VnapG488s9378rftYbMoogzGu5/bAAAAAASUVORK5CYII=";
-const qrImg = new Image();
-const qrReady = new Promise(res => { qrImg.onload = qrImg.onerror = () => res(); });
-qrImg.src = "data:image/png;base64," + QR_B64;
-
-$("shareCardBtn").addEventListener("click", () => {
-  if (!lastResult || lastResult.tSleep === null) {
-    alert("还没有有效预测——先添加一杯咖啡吧 ☕"); return;
+    const referenceColor = colors.getPropertyValue("--chart-reference").trim();
+    if (reference) line(reference, referenceColor, true);
+    if (threshold !== undefined) {
+      ctx.strokeStyle = referenceColor;
+      ctx.setLineDash([5, 5]);
+      ctx.beginPath();
+      ctx.moveTo(left, y(threshold));
+      ctx.lineTo(right, y(threshold));
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    line(key, color);
+    for (const [at, stroke, dashed] of [
+      [target(), colors.getPropertyValue("--green").trim(), true],
+      [
+        result.hasRecords && result.sleep,
+        colors.getPropertyValue("--brown").trim(),
+        false,
+      ],
+    ]) {
+      if (!at || at < result.start || at > result.end) continue;
+      ctx.strokeStyle = stroke;
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash(dashed ? [4, 4] : []);
+      ctx.beginPath();
+      ctx.moveTo(x(at), top);
+      ctx.lineTo(x(at), bottom);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    const steps = w < 360 ? 2 : w < 480 ? 3 : 5;
+    for (let i = 0; i <= steps; i++) {
+      const at = new Date(
+        +result.start + ((result.end - result.start) * i) / steps,
+      );
+      const label =
+        (S.dayKey(at) !== S.dayKey(result.start) ? "次日 " : "") + nowTime(at);
+      ctx.textAlign = i === 0 ? "left" : i === steps ? "right" : "center";
+      ctx.fillStyle = "#697770";
+      ctx.fillText(label, x(at), h - 9);
+    }
+    canvas.setAttribute(
+      "aria-label",
+      canvas.getAttribute("aria-label").split("；")[0] +
+        "；纵轴：" + canvas.dataset.axisLabel +
+        "；" +
+        $("curveRange").textContent,
+    );
   }
-  qrReady.then(() => {
-  const cv = $("shareCanvas"), ctx = cv.getContext("2d");
-  const W = cv.width, H = cv.height;
-  // 背景
-  const g = ctx.createLinearGradient(0, 0, 0, H);
-  g.addColorStop(0, "#1a1a2e"); g.addColorStop(1, "#2b1a3a");
-  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
-  // 装饰圆
-  ctx.fillStyle = "rgba(212,105,30,0.15)";
-  ctx.beginPath(); ctx.arc(W - 120, 150, 220, 0, 7); ctx.fill();
-  ctx.fillStyle = "rgba(139,92,246,0.12)";
-  ctx.beginPath(); ctx.arc(90, H - 180, 260, 0, 7); ctx.fill();
-
-  const center = W / 2;
-  ctx.textAlign = "center";
-  // 品牌
-  ctx.fillStyle = "#eceaf2";
-  ctx.font = "700 52px -apple-system, 'PingFang SC', sans-serif";
-  ctx.fillText("Caff", center - 62, 130);
-  ctx.fillStyle = "#e08a4e";
-  ctx.fillText("Nap", center + 62, 130);
-  ctx.fillStyle = "#9aa0ab";
-  ctx.font = "26px -apple-system, 'PingFang SC', sans-serif";
-  ctx.fillText("咖啡因宵禁 & 入睡预测", center, 178);
-
-  // 主文案
-  ctx.fillStyle = "#9aa0ab"; ctx.font = "34px -apple-system, 'PingFang SC', sans-serif";
-  ctx.fillText("今晚预计", center, 420);
-  ctx.fillStyle = "#ef6a86"; ctx.font = "700 150px -apple-system, 'PingFang SC', sans-serif";
-  const tS = lastResult.tSleep;
-  ctx.fillText(toHM(tS), center, 570);
-  ctx.fillStyle = "#eceaf2"; ctx.font = "40px -apple-system, 'PingFang SC', sans-serif";
-  ctx.fillText("才能睡着" + (tS >= 1440 ? "（次日）" : ""), center, 650);
-
-  // 数据行
-  ctx.font = "28px -apple-system, 'PingFang SC', sans-serif";
-  ctx.fillStyle = "#c9c6d4";
-  const rows = [
-    `今日咖啡因 ${Math.round(lastResult.totalMg)} mg · ${lastResult.cups} 杯`,
-    `估算半衰期 ${lastResult.th.toFixed(1)} h · 目标入睡 ${toHM(lastResult.targetBed)}`,
-    `宵禁时刻 ${toHM(lastResult.lastCallMin)}（最后一杯最晚）`
-  ];
-  rows.forEach((r, i) => ctx.fillText(r, center, 790 + i * 52));
-
-  // 风险徽章
-  const badgeMap = { "高风险": "#ef6a86", "中风险": "#e0a63e", "低风险": "#4cc38a" };
-  const bColor = badgeMap[lastResult.badge.slice(0, 3)] || "#9aa0ab";
-  ctx.font = "600 26px -apple-system, 'PingFang SC', sans-serif";
-  const bw = ctx.measureText(lastResult.badge).width + 44;
-  ctx.fillStyle = "rgba(255,255,255,0.08)";
-  ctx.strokeStyle = bColor; ctx.lineWidth = 2;
-  ctx.beginPath();
-  if (ctx.roundRect) ctx.roundRect(center - bw / 2, 990, bw, 48, 24);
-  else ctx.rect(center - bw / 2, 990, bw, 48);
-  ctx.fill(); ctx.stroke();
-  ctx.fillStyle = bColor;
-  ctx.fillText(lastResult.badge, center, 1023);
-
-  // 底部
-  ctx.fillStyle = "#6b7280"; ctx.font = "22px -apple-system, 'PingFang SC', sans-serif";
-  ctx.fillText(`${todayKey()} · 数据仅存本机 · 不构成医疗建议`, center - 60, H - 46);
-  // 右下角二维码（扫码跳转线上版）
-  if (qrImg.complete && qrImg.naturalWidth > 0) {
-    const qx = W - 176, qy = H - 206, qs = 150;
-    ctx.fillStyle = "#ffffff";
-    ctx.beginPath();
-    if (ctx.roundRect) ctx.roundRect(qx, qy, qs, qs, 12); else ctx.rect(qx, qy, qs, qs);
-    ctx.fill();
-    ctx.drawImage(qrImg, qx + 10, qy + 10, qs - 20, qs - 20);
-    ctx.fillStyle = "#9aa0ab"; ctx.font = "18px -apple-system, 'PingFang SC', sans-serif";
-    ctx.fillText("扫码体验", qx + qs / 2, qy + qs + 24);
+  function renderReview() {
+    const dates = Array.from({ length: 14 }, (_, i) => {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      return S.dayKey(d);
+    });
+    const recorded = dates
+      .map((date) => recordsOn(date))
+      .filter((r) => r.length);
+    const total = recorded.flat().reduce((s, r) => s + dose(r), 0),
+      nights = dates.filter((d) => data.sleep[d]).length;
+    $("reviewMetrics").innerHTML =
+      "<div><p>有记录的日期</p><strong>" +
+      recorded.length +
+      " 天</strong></div><div><p>记录日平均摄入</p><strong>" +
+      (recorded.length ? Math.round(total / recorded.length) + " mg" : "—") +
+      "</strong></div><div><p>睡眠反馈</p><strong>" +
+      nights +
+      " 晚</strong></div>";
+    $("historyList").innerHTML = dates
+      .map((date) => {
+        const rows = recordsOn(date),
+          totalMg = rows.reduce((s, r) => s + dose(r), 0),
+          sleep = data.sleep[date];
+        return (
+          '<details class="history-day"><summary class="history-row"><span>' +
+          date.slice(5).replace("-", " / ") +
+          "</span><div>" +
+          (rows.length
+            ? Math.round(totalMg) + " mg · " + rows.length + " 条记录"
+            : "尚未记录") +
+          '<div class="history-bar"><span style="width:' +
+          Math.min(100, totalMg / 6) +
+          '%"></span></div></div><span class="small muted">' +
+          (sleep ? sleep.bed + " 睡 / " + sleep.wake + " 起" : "无睡眠反馈") +
+          "</span></summary>" +
+          (rows.length
+            ? rows.map(recordRow).join("")
+            : '<p class="small muted">这天没有摄入记录。</p>') +
+          '<button class="text-button" data-sleep-date="' +
+          date +
+          '">记录 / 修改这晚睡眠</button></details>'
+        );
+      })
+      .join("");
   }
-
-  cv.toBlob(blob => {
-    const file = new File([blob], "caffnap.png", { type: "image/png" });
-    if (navigator.canShare && navigator.canShare({ files: [file] })) {
-      navigator.share({ files: [file], title: "CaffNap 入睡预测" }).catch(() => {});
+  function renderSettings() {
+    const assessment = data.reactionAssessment;
+    $("reviewReaction").hidden = !assessment;
+    text("reactionPredictionNote", assessment
+      ? "当前预测依据：" + data.profile.source + "。可查看自测建议后决定是否替换。"
+      : "完成自测后，可将建议参数应用到预测；跳过则保留当前参数。");
+    text("editReactionLabel", assessment ? "修改自测" : "开始自测");
+    text(
+      "reactionStatus",
+      assessment
+        ? R.summarize(assessment.answers).title +
+            " · " +
+            S.dayKey(assessment.updatedAt) +
+            " 更新"
+        : "尚未填写。可以先使用默认估算，稍后再补充。",
+    );
+    $("reactionAnswers").innerHTML = assessment
+      ? R.questions
+          .map(
+            (q) =>
+              "<dt>" +
+              escape(q.title) +
+              "</dt><dd>" +
+              escape(
+                q.options.find(([key]) => key === assessment.answers[q.key])[1],
+              ) +
+              "</dd>",
+          )
+          .join("")
+      : "";
+    text("parameterSource", data.profile.source);
+    $("halfLife").value = Number(data.profile.halfLife.toFixed(2));
+    $("threshold").value = data.profile.threshold;
+    $("dlmoOffset").value = data.profile.dlmoOffset || 0;
+    $("profileMode").value = data.profile.setupMode || "default";
+    $("manualProfileOption").hidden = data.profile.setupMode !== "manual";
+    for (const [key, id] of Object.entries(geneFields)) {
+      const value = data.legacy.geno?.[key]?.g || "";
+      $(id).value = [...$(id).options].some((o) => o.value === value)
+        ? value
+        : "";
+    }
+    previewProfile();
+    $("customList").innerHTML = data.custom.length
+      ? data.custom
+          .map(
+            (b) =>
+              '<div class="recent-button"><span><strong>' +
+              escape(name(b)) +
+              "</strong><small>" +
+              escape(b.spec) +
+              " · " +
+              M.caffeine(b).mid +
+              ' mg / 份</small></span><button class="icon-button" data-delete-custom="' +
+              escape(b.k) +
+              '" aria-label="删除饮品 ' +
+              escape(name(b)) +
+              '" title="删除饮品">' +
+              icon("trash-2") +
+              "</button></div>",
+          )
+          .join("")
+      : '<p class="small muted">还没有自定义饮品。</p>';
+  }
+  function render() {
+    renderHome();
+    renderReview();
+    renderSettings();
+    icons();
+  }
+  let surveyOnly = false,
+    surveyIndex = 0,
+    surveyDraft = {},
+    surveyReturnTo = "editReaction";
+  function openOrientation(view = "welcome") {
+    const welcome = view === "welcome";
+    $("orientationWelcome").hidden = !welcome;
+    $("orientationInvite").hidden = welcome;
+    $("orientation").setAttribute("aria-labelledby", welcome ? "welcomeTitle" : "inviteTitle");
+    text("orientationDefault", data.profile.setupMode === "default" ? "先用默认值" : "保留当前设置");
+    $("orientation").showModal();
+    $(welcome ? "orientationStart" : "orientationSurvey").focus();
+  }
+  function rememberOrientation() {
+    data.featureTourSeen = true;
+    if (!save()) toast("这次没能记住导览进度，下次可能会再见到它");
+  }
+  function dismissOrientation() {
+    $("orientation").close();
+    rememberOrientation();
+    $("guideAgain").focus({ preventScroll: true });
+  }
+  function openReactionSurvey(returnTo = "editReaction") {
+    surveyOnly = true;
+    surveyReturnTo = returnTo;
+    surveyIndex = 0;
+    surveyDraft = { ...data.reactionAssessment?.answers };
+    $("onboarding").showModal();
+    renderSurvey();
+  }
+  function showGuideStep(step, titleId) {
+    for (const id of [
+      "guideStepOne",
+      "guideSurvey",
+      "guideSurveyResult",
+      "guideStepTwo",
+    ])
+      $(id).hidden = id !== step;
+    document.querySelector(".onboarding-art").hidden = [
+      "guideSurvey",
+      "guideSurveyResult",
+    ].includes(step);
+    $("onboarding").setAttribute("aria-labelledby", titleId);
+    $("onboarding").scrollTop = 0;
+  }
+  function guide() {
+    surveyOnly = false;
+    surveyIndex = 0;
+    surveyDraft = { ...data.reactionAssessment?.answers };
+    $("guideTarget").value = data.profile.targetBed;
+    text(
+      "dailySurveyLabel",
+      data.reactionAssessment ? "选填：更新饮用反应自测" : "选填：饮用反应自测",
+    );
+    showGuideStep("guideStepOne", "onboardingTitle");
+    $("onboarding").showModal();
+  }
+  function renderSurvey() {
+    const q = R.questions[surveyIndex];
+    text(
+      "surveyProgress",
+      "饮用反应小档案 · 选填" + " · " + (surveyIndex + 1) + "/5",
+    );
+    $("surveyProgressBar").value = surveyIndex + 1;
+    text("surveyTitle", q.title);
+    $("surveyOptions").innerHTML = q.options
+      .map(
+        ([key, label]) =>
+          '<label><input type="radio" name="answer" value="' +
+          key +
+          '" required' +
+          (surveyDraft[q.key] === key ? " checked" : "") +
+          "><span>" +
+          escape(label) +
+          "</span></label>",
+      )
+      .join("");
+    $("surveyNext").disabled = !surveyDraft[q.key];
+    $("surveyNext").innerHTML =
+      (surveyIndex === R.questions.length - 1 ? "查看预测起点" : "下一题") +
+      icon("arrow-right");
+    text("surveySkip", surveyOnly ? "取消，不保存" : "跳过自测");
+    showGuideStep("guideSurvey", "surveyTitle");
+    icons();
+    $("surveyTitle").focus();
+  }
+  function surveyResult() {
+    const result = R.summarize(surveyDraft),
+      recommendation = R.recommend(surveyDraft),
+      parameters = M.profileParameters(recommendation.preset);
+    text("surveyResultTitle", result.title);
+    $("surveyResultRows").innerHTML = result.reactions
+      .map(
+        (r) =>
+          "<dt>" + escape(r.label) + "</dt><dd>" + escape(r.value) + "</dd>",
+      )
+      .join("");
+    text("surveyResultNote", result.note);
+    text("surveyPresetTitle", recommendation.title);
+    text("surveyPresetReason", recommendation.reason);
+    text("surveyPresetParameters", "试算半衰期 " + parameters.halfLife +
+      " 小时 · 参考阈值 " + parameters.threshold + " mg/L");
+    $("surveyApply").checked = !["manual", "report"].includes(data.profile.setupMode);
+    updateSurveyApply();
+    $("surveySaveError").hidden = true;
+    showGuideStep("guideSurveyResult", "surveyResultTitle");
+    $("surveyResultTitle").focus();
+  }
+  function updateSurveyApply() {
+    const apply = $("surveyApply").checked;
+    text("surveySaveLabel", apply
+      ? (surveyOnly ? "保存并应用预测" : "应用预测并继续")
+      : (surveyOnly ? "仅保存回答" : "保存回答并继续"));
+    text("surveyApplyNote", apply
+      ? "保存后替换当前估算参数，同步更新预测、宵禁和曲线。睡眠目标与实际记录保持不变。"
+      : "保留当前预测参数（" + data.profile.source + "），本次仅保存自测回答。");
+  }
+  function finishSurvey() {
+    if (surveyOnly) {
+      $("onboarding").close();
+      $(surveyReturnTo).focus({ preventScroll: true });
     } else {
-      download(`caffnap-${todayKey()}.png`, blob);
+      showGuideStep("guideStepTwo", "guideActionTitle");
+      $("guidePlan").focus();
     }
-  }, "image/png");
+  }
+  function cancelGuide() {
+    if (surveyOnly) finishSurvey();
+    else endGuide(false);
+  }
+  function setupChartHelp() {
+    let activeHelp = null,
+      closeTimer,
+      pinned = false;
+    const close = () => {
+      clearTimeout(closeTimer);
+      if (activeHelp) activeHelp.tip.hidden = true;
+      activeHelp = null;
+      pinned = false;
+    };
+    const position = () => {
+      if (!activeHelp) return;
+      const { trigger, tip } = activeHelp,
+        anchor = trigger.getBoundingClientRect(),
+        viewport = window.visualViewport,
+        left = viewport?.offsetLeft || 0,
+        top = viewport?.offsetTop || 0,
+        width = Math.min(
+          viewport?.width || window.innerWidth,
+          document.documentElement.clientWidth,
+        ),
+        height = viewport?.height || window.innerHeight;
+      tip.style.maxWidth = Math.max(0, width - 32) + "px";
+      tip.style.maxHeight = Math.max(0, height - 32) + "px";
+      const bounds = tip.getBoundingClientRect();
+      if (anchor.bottom < top || anchor.top > top + height) {
+        close();
+        return;
+      }
+      // Prefer above the trigger so the explanation leaves its curve visible.
+      const y = anchor.top - bounds.height - 8;
+      tip.style.left =
+        Math.max(
+          left + 16,
+          Math.min(anchor.left, left + width - bounds.width - 16),
+        ) + "px";
+      tip.style.top =
+        Math.max(
+          top + 16,
+          Math.min(
+            y >= top + 16 ? y : anchor.bottom + 8,
+            top + height - bounds.height - 16,
+          ),
+        ) + "px";
+    };
+    const open = (help) => {
+      clearTimeout(closeTimer);
+      if (activeHelp !== help) {
+        close();
+        activeHelp = help;
+      }
+      help.tip.hidden = false;
+      position();
+    };
+    const leave = (help) => {
+      clearTimeout(closeTimer);
+      if (!pinned && document.activeElement !== help.trigger)
+        closeTimer = setTimeout(() => {
+          if (activeHelp === help) close();
+        }, 180);
+    };
+    document.querySelectorAll(".chart-help").forEach((element) => {
+      const help = {
+        trigger: element.querySelector(".chart-help-trigger"),
+        tip: element.querySelector(".chart-tooltip"),
+      };
+      help.trigger.addEventListener("pointerenter", (event) => {
+        if (event.pointerType === "mouse") open(help);
+      });
+      help.trigger.addEventListener("pointerleave", () => leave(help));
+      help.trigger.addEventListener("focus", () => open(help));
+      help.trigger.addEventListener("blur", () => {
+        if (activeHelp === help && !help.tip.matches(":hover")) close();
+      });
+      help.trigger.addEventListener("click", () => {
+        if (activeHelp === help && pinned) close();
+        else {
+          open(help);
+          pinned = true;
+        }
+      });
+      help.tip.addEventListener("pointerenter", () => clearTimeout(closeTimer));
+      help.tip.addEventListener("pointerleave", () => leave(help));
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && activeHelp) {
+        event.preventDefault();
+        close();
+      }
+    });
+    const dismissOutside = (event) => {
+      if (
+        activeHelp &&
+        !activeHelp.trigger.contains(event.target) &&
+        !activeHelp.tip.contains(event.target)
+      )
+        close();
+    };
+    document.addEventListener("pointerdown", dismissOutside);
+    document.addEventListener("click", dismissOutside);
+    window.addEventListener("resize", position);
+    window.addEventListener("scroll", position, { passive: true });
+    window.visualViewport?.addEventListener("resize", position);
+  }
+  function endGuide(useGoal) {
+    if (useGoal && S.validTime($("guideTarget").value))
+      data.profile.targetBed = $("guideTarget").value;
+    data.onboarding = true;
+    save();
+    $("onboarding").close();
+    render();
+  }
+  function showDrinkStep(step) {
+    $("drinkPicker").hidden = step !== "picker";
+    $("drinkForm").hidden = step !== "form";
+    $("comparison").hidden = step !== "comparison";
+    text("drinkTitle", step === "comparison"
+      ? "这一杯，还有其他选择"
+      : step === "form"
+        ? editingId ? "调整这条记录" : mode === "record" ? "这杯，什么时候喝的？" : "这杯，准备几点喝？"
+        : mode === "cutoff" ? "最后一杯，想喝什么？" : mode === "record" ? "刚才，喝了什么？" : "想喝哪一杯？");
+    $("drinkDialog").scrollTop = 0;
+    icons();
+  }
+  function openDrink(nextMode, beverage = null, record = null) {
+    mode = nextMode;
+    editingId = record?.id || null;
+    selected = beverage;
+    draft = null;
+    text(
+      "drinkEyebrow",
+      record
+        ? "修改实际记录"
+        : mode === "cutoff"
+          ? "宵禁反推 · 尚未记录"
+          : mode === "plan"
+            ? "饮前比较 · 尚未记录"
+            : "实际摄入",
+    );
+    $("drinkSearch").value = "";
+    $("brandFilter").innerHTML =
+      '<option value="">全部品牌</option>' +
+      [...new Set(drinks().map((b) => b.brand || "自定义"))]
+        .map(
+          (brand) =>
+            '<option value="' +
+            escape(brand) +
+            '">' +
+            escape(brand) +
+            "</option>",
+        )
+        .join("");
+    const date = record ? new Date(record.consumedAt) : new Date();
+    $("drinkCups").value = record?.cups || 1;
+    $("drinkDate").value = S.dayKey(date);
+    $("drinkTime").value = nowTime(date);
+    $("drinkDate").max =
+      mode === "record" ? S.dayKey(new Date()) : S.dayKey(target());
+    if (!$("drinkDialog").open) $("drinkDialog").showModal();
+    if (selected) selectDrink(selected);
+    else {
+      showDrinkStep("picker");
+      renderPicker();
+      $("drinkSearch").focus();
+    }
+  }
+  function renderPicker() {
+    const query = $("drinkSearch").value.trim().toLowerCase(),
+      brand = $("brandFilter").value;
+    const results = drinks().filter(
+      (b) =>
+        (!brand || (b.brand || "自定义") === brand) &&
+        [b.drink, b.label, b.brand, b.category, b.spec]
+          .join(" ")
+          .toLowerCase()
+          .includes(query),
+    );
+    text("drinkResultCount", results.length + " 款饮品");
+    $("drinkResults").innerHTML = results.length
+      ? results
+          .map(
+            (b) =>
+              '<button class="drink-choice" data-drink="' +
+              escape(b.k) +
+              '"><span class="drink-tile">' +
+              icon("coffee") +
+              "</span><span><strong>" +
+              escape(name(b)) +
+              "</strong><small>" +
+              escape(b.brand || "自定义") +
+              " · " +
+              escape(b.spec || "每份") +
+              '</small></span><span class="dose-label">' +
+              range(M.caffeine(b)) +
+              " mg</span></button>",
+          )
+          .join("")
+      : '<div class="empty-state"><div><h3>暂时没找到这杯</h3><p>可以清除筛选再看看，也可以添加自己的饮品。</p><button type="button" class="text-button" id="clearDrinkFilters">' + icon("rotate-ccw") + '清除筛选</button></div></div>';
+    icons();
+  }
+  function selectDrink(b) {
+    if (mode === "cutoff") {
+      cutoffBeverage = b;
+      $("drinkDialog").close();
+      renderCutoff();
+      return;
+    }
+    selected = b;
+    $("selectedDrink").innerHTML =
+      '<span class="drink-tile">' +
+      icon("coffee") +
+      "</span><div><h3>" +
+      escape(name(b)) +
+      "</h3><p>" +
+      escape(b.brand || "自定义") +
+      " · " +
+      escape(b.spec || "每份") +
+      "</p></div>";
+    text(
+      "drinkSource",
+      range(M.caffeine(b)) +
+        " mg / 份 · " +
+        (b.source === "official"
+          ? "饮品库标注：官方来源"
+          : b.source === "personal"
+            ? "个人提供"
+            : "饮品库估算") +
+        (b.collected ? " · 采集于 " + b.collected : "") +
+        "。实际出品可能不同。",
+    );
+    $("drinkSubmit").innerHTML =
+      mode === "plan"
+        ? "看看不同选择" + icon("arrow-right")
+        : icon("check") + (editingId ? "保存修改" : "实际喝过，确认记录");
+    clearDrinkError();
+    showDrinkStep("form");
+    $("drinkCups").focus();
+  }
+  function readDraft() {
+    const cups = Number($("drinkCups").value),
+      date = $("drinkDate").value,
+      time = $("drinkTime").value;
+    const fail = (message, fields) => {
+      const error = new Error(message);
+      error.fields = fields;
+      throw error;
+    };
+    if (!selected) fail("请先选一款饮品。", []);
+    if (!(cups >= 0.01 && cups <= 10)) fail("分量请填写 0.01 到 10 份。", ["drinkCups"]);
+    if (!S.validDay(date)) fail("请填好饮用日期。", ["drinkDate"]);
+    if (!S.validTime(time)) fail("请填好饮用时间。", ["drinkTime"]);
+    const when = new Date(date + "T" + time + ":00");
+    if (mode === "record" && when > new Date())
+      fail(
+        "这个时间还没到。记录已喝的饮品，请选已经过去的时间。",
+        ["drinkDate", "drinkTime"],
+      );
+    if (mode === "plan" && when >= target())
+      fail(
+        "这次比较的饮用时间需早于 " + targetLabel() + " 的睡眠目标。",
+        ["drinkDate", "drinkTime"],
+      );
+    return { beverage: { ...selected }, cups, consumedAt: when.toISOString() };
+  }
+  function clearDrinkError() {
+    text("drinkError", "");
+    ["drinkCups", "drinkDate", "drinkTime"].forEach((id) => {
+      $(id).removeAttribute("aria-invalid");
+      $(id).removeAttribute("aria-describedby");
+    });
+  }
+  function recordActual(value) {
+    if (Date.parse(value.consumedAt) > Date.now()) {
+      toast("还没到这个时间，暂时不能记为实际摄入。");
+      return;
+    }
+    const timestamp = new Date().toISOString(),
+      previous = data.records.find((r) => r.id === editingId);
+    const r = {
+      ...value,
+      id: editingId || S.uid(),
+      createdAt: previous?.createdAt || timestamp,
+      updatedAt: timestamp,
+      source: "user",
+    };
+    if (!S.validRecord(r)) {
+      toast("记录内容无效，请检查输入。");
+      return;
+    }
+    if (previous)
+      data.records = data.records.map((item) => (item.id === r.id ? r : item));
+    else data.records.push(r);
+    data.recent = [
+      r.beverage.k,
+      ...(data.recent || []).filter((k) => k !== r.beverage.k),
+    ].slice(0, 6);
+    $("drinkDialog").close();
+    persisted(previous ? "记录已更新" : "已记录实际摄入");
+  }
+  function buildComparison() {
+    const lower = drinks().filter(
+      (b) => M.caffeine(b).high < M.caffeine(draft.beverage).low,
+    );
+    const coffee = (b) =>
+      !/无咖啡|非咖啡/.test(b.category || "") &&
+      /咖啡|美式|拿铁|冷萃|浓缩|摩卡|星冰/.test(b.category || "");
+    const similarity = (b) =>
+      Number(coffee(b) === coffee(draft.beverage)) * 2 +
+      Number(b.brand === draft.beverage.brand);
+    lower.sort(
+      (a, b) =>
+        similarity(b) - similarity(a) || M.caffeine(a).mid - M.caffeine(b).mid,
+    );
+    options = M.compare(active(), draft, target(), data.profile, lower[0]);
+    chosen = "original";
+    text("compareTarget", "睡眠目标 · " + targetLabel());
+    $("compareOptions").innerHTML = options
+      .map(
+        (o) =>
+          '<label class="compare-option"><span class="option-title">' +
+          o.title +
+          '<input type="radio" name="comparisonChoice" value="' +
+          o.id +
+          '" ' +
+          (o.id === chosen ? "checked" : "") +
+          '></span><span class="option-dose">' +
+          range(o.remaining) +
+          ' <small style="display:inline">mg</small></span><small>' +
+          (o.beverage
+            ? escape(name(o.beverage)) + " · " + o.cups + " 份"
+            : "仅计算此前已记录的摄入") +
+          "</small><small>" +
+          (o.aboveThreshold ? "高于模型参考值" : "低于模型参考值") +
+          "</small></label>",
+      )
+      .join("");
+    showDrinkStep("comparison");
+    updateChoice();
+    $("compareOptions").querySelector("input")?.focus();
+  }
+  function updateChoice() {
+    const o = options.find((o) => o.id === chosen);
+    $("confirmConsumed").hidden = !o?.beverage;
+    $("confirmConsumed").disabled =
+      !!draft && Date.parse(draft.consumedAt) > Date.now();
+    text("finishCompare", o?.beverage ? "先不记录" : "完成，不记录");
+    text(
+      "compareMessage",
+      !o?.beverage
+        ? "这次不新增摄入。已有摄入的残留仍会计入估算。"
+        : Date.parse(draft.consumedAt) > Date.now()
+          ? "这是未来时间的试算。实际喝过后再记录，不会自动写入摄入历史。"
+          : "当前仅在比较。实际喝过后再确认，才会写入摄入记录。",
+    );
+  }
+  function openSleep(date) {
+    if (!date) {
+      const d = new Date();
+      d.setDate(d.getDate() - 1);
+      date = S.dayKey(d);
+    }
+    $("sleepDate").max = S.dayKey(new Date());
+    $("sleepDate").value = date;
+    fillSleep();
+    text("sleepError", "");
+    $("sleepDialog").showModal();
+  }
+  function fillSleep() {
+    const s = data.sleep[$("sleepDate").value];
+    $("sleepBed").value = s?.bed || "23:30";
+    $("sleepWake").value = s?.wake || "07:00";
+  }
+  function download(filename, blob) {
+    const a = document.createElement("a"),
+      url = URL.createObjectURL(blob);
+    a.href = url;
+    a.download = filename;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+  document
+    .querySelectorAll("[data-page]")
+    .forEach((b) =>
+      b.addEventListener("click", () => showPage(b.dataset.page)),
+    );
+  document.querySelector(".brand").addEventListener("click", (e) => {
+    e.preventDefault();
+    showPage("today");
   });
-});
-
-// ==================== 宵禁日历事件（.ics，宵禁前 30 分钟提醒） ====================
-$("icsBtn").addEventListener("click", () => {
-  if (!lastResult) return;
-  const lcMin = lastResult.lastCallMin;
-  const now = new Date();
-  const dt = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
-  dt.setMinutes(lcMin);
-  if (dt <= now) dt.setDate(dt.getDate() + 1);   // 今天已过 → 明天
-  const end = new Date(dt.getTime() + 30 * 60000);
-  const fmt = d => {
-    const p = n => String(n).padStart(2, "0");
-    return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}T${p(d.getHours())}${p(d.getMinutes())}00`;
+  document
+    .querySelectorAll("[data-close]")
+    .forEach((b) =>
+      b.addEventListener("click", () => $(b.dataset.close).close()),
+    );
+  setupChartHelp();
+  featureTour = CaffNapTour.create({
+    prepare: () => showPage("today"),
+    onExit: (reason) => {
+      rememberOrientation();
+      $("guideAgain").focus({ preventScroll: true });
+      // Let Driver restore focus before opening the optional next dialog.
+      if (reason === "done" && !data.reactionAssessment)
+        queueMicrotask(() => openOrientation("invite"));
+    },
+  });
+  $("guideAgain").onclick = () => openOrientation();
+  $("orientationStart").onclick = () => {
+    $("orientation").close();
+    if (!featureTour.start()) {
+      openOrientation();
+      toast("导览暂时没能打开，可以刷新重试，或先自己逛逛");
+    }
   };
-  const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+/, "");
-  const ics = [
-    "BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//CaffNap//Curfew//CN", "CALSCALE:GREGORIAN",
-    "BEGIN:VEVENT",
-    `UID:caffnap-${fmt(dt)}@caffnap`,
-    `DTSTAMP:${stamp}`,
-    `DTSTART:${fmt(dt)}`,
-    `DTEND:${fmt(end)}`,
-    "SUMMARY:☕ 咖啡因宵禁 · 最后一杯",
-    `DESCRIPTION:想在 ${toHM(lastResult.targetBed)} 入睡，这是最后一杯的最晚时间（约 ${Math.round(lastResult.selMg)}mg）。由 CaffNap 生成。`,
-    "BEGIN:VALARM", "TRIGGER:-PT30M", "ACTION:DISPLAY",
-    "DESCRIPTION:☕ 咖啡因宵禁还有 30 分钟，想喝就现在",
-    "END:VALARM", "END:VEVENT", "END:VCALENDAR"
-  ].join("\r\n");
-  download("caffnap-curfew.ics", new Blob([ics], { type: "text/calendar" }));
-});
-
-// ==================== 事件 & 初始化 ====================
-["cyp", "ador", "ahr", "abcg2", "smoke", "oc"].forEach(id => {
-  $(id).addEventListener("input", () => { lsSet(LS.day, state); calc(); });
-});
-["napOn", "napT", "napD", "wakeT", "targetBed"].forEach(id => {
-  // 恢复持久化的小睡/起床/目标设置
-  if (state[id] !== undefined && state[id] !== null) {
-    if (id === "napOn") $(id).checked = !!state[id]; else $(id).value = state[id];
-  }
-  $(id).addEventListener("input", () => {
-    if (id === "napOn") state[id] = $(id).checked; else state[id] = $(id).value;
-    save(); calc();
+  $("orientationClose").onclick = dismissOrientation;
+  $("orientationExplore").onclick = dismissOrientation;
+  $("orientationDefault").onclick = dismissOrientation;
+  $("orientation").addEventListener("cancel", (event) => {
+    event.preventDefault();
+    dismissOrientation();
   });
-});
-
-// 起床时间默认取睡眠反馈的平均值（≥3 晚时）
-(function wakeDefault() {
-  const sk = Object.keys(SLEEP);
-  if (sk.length >= 3 && !lsGet(LS.day, {}).wakeT) {
-    const avg = sk.reduce((s, k) => s + toMin(SLEEP[k].wake), 0) / sk.length;
-    $("wakeT").value = toHM(avg); state.wakeT = $("wakeT").value;
+  $("orientationSurvey").onclick = () => {
+    $("orientation").close();
+    openReactionSurvey("startDaily");
+  };
+  $("startDaily").onclick = guide;
+  $("guideNext").onclick = () => {
+    if (!$("guideTarget").reportValidity()) return;
+    finishSurvey();
+  };
+  $("dailySurvey").onclick = () => {
+    if (!$("guideTarget").reportValidity()) return;
+    renderSurvey();
+  };
+  $("guideBack").onclick = () => {
+    showGuideStep("guideStepOne", "onboardingTitle");
+    $("guideTarget").focus();
+  };
+  $("editReaction").onclick = () => openReactionSurvey();
+  $("surveyForm").onchange = (event) => {
+    if (event.target.name !== "answer") return;
+    surveyDraft[R.questions[surveyIndex].key] = event.target.value;
+    $("surveyNext").disabled = false;
+  };
+  $("surveyForm").onsubmit = (event) => {
+    event.preventDefault();
+    if (!surveyDraft[R.questions[surveyIndex].key]) return;
+    if (surveyIndex < R.questions.length - 1) {
+      surveyIndex++;
+      renderSurvey();
+    } else surveyResult();
+  };
+  $("surveyBack").onclick = () => {
+    if (surveyIndex > 0) {
+      surveyIndex--;
+      renderSurvey();
+    } else if (surveyOnly) finishSurvey();
+    else {
+      showGuideStep("guideStepOne", "onboardingTitle");
+      $("guideTarget").focus();
+    }
+  };
+  $("surveyResultBack").onclick = renderSurvey;
+  $("surveyApply").onchange = updateSurveyApply;
+  $("reviewReaction").onclick = () => {
+    if (!data.reactionAssessment) return;
+    surveyOnly = true;
+    surveyReturnTo = "editReaction";
+    surveyIndex = 0;
+    surveyDraft = { ...data.reactionAssessment.answers };
+    surveyResult();
+    $("onboarding").showModal();
+    $("surveyResultTitle").focus();
+  };
+  $("surveySkip").onclick = finishSurvey;
+  $("surveyResultSkip").onclick = finishSurvey;
+  $("surveySave").onclick = () => {
+    const previous = data.reactionAssessment,
+      previousProfile = data.profile,
+      apply = $("surveyApply").checked;
+    data.reactionAssessment = {
+      version: 1,
+      answers: { ...surveyDraft },
+      updatedAt: new Date().toISOString(),
+    };
+    if (apply) {
+      const parameters = M.profileParameters(R.recommend(surveyDraft).preset);
+      data.profile = {
+        ...data.profile,
+        ...parameters,
+        source: "自测建议（" + S.dayKey(data.reactionAssessment.updatedAt) + "）· " + parameters.source,
+      };
+    }
+    if (!save()) {
+      data.reactionAssessment = previous;
+      data.profile = previousProfile;
+      text(
+        "surveySaveError",
+        "档案未能保存，请重试或暂不保存。原有档案未被修改。",
+      );
+      $("surveySaveError").hidden = false;
+      return;
+    }
+    render();
+    finishSurvey();
+    toast(apply ? "自测已保存，预测、宵禁和曲线已更新" : "自测回答已保存，保留原有预测参数");
+  };
+  $("skipGuide").onclick = cancelGuide;
+  $("onboarding").addEventListener("cancel", (e) => {
+    e.preventDefault();
+    cancelGuide();
+  });
+  $("guideEmpty").onclick = () => endGuide(true);
+  $("guideSleep").onclick = () => {
+    endGuide(true);
+    openSleep();
+  };
+  $("guidePlan").onclick = () => {
+    endGuide(true);
+    openDrink("plan");
+  };
+  $("guideRecord").onclick = () => {
+    endGuide(true);
+    openDrink("record");
+  };
+  $("targetBed").onchange = () => {
+    if (!S.validTime($("targetBed").value)) {
+      $("targetBed").value = data.profile.targetBed;
+      return;
+    }
+    data.profile.targetBed = $("targetBed").value;
+    persisted("睡眠目标已更新");
+  };
+  $("startPlan").onclick = () => openDrink("plan");
+  $("startRecord").onclick = () => openDrink("record");
+  $("napRecord").onclick = () => openDrink("record");
+  $("chooseCutoff").onclick = () => openDrink("cutoff");
+  $("cutoffCups").oninput = () => renderCutoff();
+  $("napForm").onsubmit = (e) => {
+    e.preventDefault();
+    data.naps[napKey()] = {
+      enabled: $("napEnabled").checked,
+      wake: $("wakeTime").value,
+      start: $("napStart").value,
+      duration: Number($("napDuration").value),
+    };
+    persisted("小睡设置已更新，预测和曲线已同步");
+  };
+  $("napEnabled").onchange = () => $("napForm").requestSubmit();
+  $("drinkSearch").oninput = renderPicker;
+  $("brandFilter").onchange = renderPicker;
+  $("changeDrink").onclick = () => {
+    showDrinkStep("picker");
+    renderPicker();
+    $("drinkSearch").focus();
+  };
+  $("backToDrink").onclick = () => {
+    showDrinkStep("form");
+    $("drinkCups").focus();
+  };
+  $("drinkForm").addEventListener("input", clearDrinkError);
+  $("drinkForm").onsubmit = (e) => {
+    e.preventDefault();
+    clearDrinkError();
+    try {
+      draft = readDraft();
+      if (mode === "record") recordActual(draft);
+      else buildComparison();
+    } catch (error) {
+      text("drinkError", error.message);
+      (error.fields || []).forEach((id) => {
+        $(id).setAttribute("aria-invalid", "true");
+        $(id).setAttribute("aria-describedby", "drinkError");
+      });
+      if (error.fields?.length) $(error.fields[0]).focus();
+    }
+  };
+  $("compareOptions").onchange = (e) => {
+    if (e.target.name === "comparisonChoice") {
+      chosen = e.target.value;
+      updateChoice();
+    }
+  };
+  $("confirmConsumed").onclick = () => {
+    const o = options.find((o) => o.id === chosen);
+    if (draft && o?.beverage)
+      recordActual({ ...draft, beverage: { ...o.beverage }, cups: o.cups });
+  };
+  $("finishCompare").onclick = () => {
+    $("drinkDialog").close();
+    toast("本次比较结束，未新增摄入记录");
+  };
+  $("openSleep").onclick = () => openSleep();
+  $("reviewSleep").onclick = () => openSleep();
+  $("sleepDate").onchange = fillSleep;
+  $("sleepForm").onsubmit = (e) => {
+    e.preventDefault();
+    const date = $("sleepDate").value,
+      bed = $("sleepBed").value,
+      wake = $("sleepWake").value;
+    if (
+      !S.validDay(date) ||
+      date > S.dayKey(new Date()) ||
+      !S.validTime(bed) ||
+      !S.validTime(wake)
+    ) {
+      text("sleepError", "请填写有效的日期与时间。");
+      return;
+    }
+    const bedDate = new Date(date + "T" + bed + ":00"),
+      wakeDate = new Date(date + "T" + wake + ":00");
+    if (Number(bed.slice(0, 2)) < 12) bedDate.setDate(bedDate.getDate() + 1);
+    wakeDate.setDate(wakeDate.getDate() + 1);
+    if (
+      wakeDate > new Date() ||
+      wakeDate <= bedDate ||
+      wakeDate - bedDate > 24 * 3600000
+    ) {
+      text(
+        "sleepError",
+        "请检查这晚的日期：起床应晚于入睡，且不能是未来时间。",
+      );
+      return;
+    }
+    data.sleep[date] = { bed, wake, updatedAt: new Date().toISOString() };
+    $("sleepDialog").close();
+    persisted("睡眠反馈已保存，估算参数未改变");
+  };
+  const geneFields = {
+    cyp: "profileCyp",
+    ador: "profileAdor",
+    ahr: "profileAhr",
+    abcg2: "profileAbcg2",
+    per1: "profilePer1",
+  };
+  function selectedGenes() {
+    return Object.fromEntries(
+      Object.entries(geneFields)
+        .filter(([, id]) => $(id).value)
+        .map(([key, id]) => [key, { g: $(id).value }]),
+    );
   }
-})();
-
-// 睡眠反馈默认日期 = 昨天
-(function fbDefault() {
-  const y = new Date(); y.setDate(y.getDate() - 1);
-  $("fbDate").value = dayKey(y);
-  $("fbDate").max = todayKey();
-})();
-
-// 默认演示数据（首次打开）
-if (state.doses.length === 0 && !localStorage.getItem(LS.day)) {
-  const demoBev = DB_ITEMS.length ? "b000" : "americano";
-  state.doses = [
-    { bev: demoBev, cups: 1, time: "08:30", day: new Date().toDateString() },
-    { bev: demoBev, cups: 1, time: "14:00", day: new Date().toDateString() }
-  ];
-}
-renderDoses();
-calc();
-renderUbevs();
-
-// 数据库状态提示
-(function dbBadge() {
-  const el = $("doseList");
-  if (!DB_ITEMS.length && el) {
-    const tip = document.createElement("div");
-    tip.style.cssText = "font-size:12px;color:var(--warn);margin-bottom:8px";
-    tip.textContent = "⚠️ 品牌数据库（db.js）未加载，当前使用通用估算值。请确认 db.js 与 index.html 同目录。";
-    el.parentNode.insertBefore(tip, el);
+  function previewProfile() {
+    const mode = $("profileMode").value;
+    $("geneChoices").hidden = mode !== "report";
+    $("saveProfile").disabled = mode === "manual";
+    const p =
+      mode === "manual"
+        ? data.profile
+        : M.profileParameters(mode, selectedGenes());
+    text(
+      "profileSummaryTitle",
+      {
+        default: "默认起点，不需要知道基因型",
+        cautious: "给估算多留一点余地",
+        report: "按报告位点换算",
+        manual: "已使用自定义参数",
+      }[mode],
+    );
+    const note =
+      mode === "cautious"
+        ? "这只是偏保守的试算情景，不表示你的实际代谢较慢。"
+        : mode === "report"
+          ? "未选择的位点沿用默认值；报告映射不能保证个体预测准确。"
+          : mode === "manual"
+            ? "可展开高级参数修改，或切换回默认估算。"
+            : "默认值是模型假设，不是对你身体的测定。";
+    text(
+      "profileSummaryNote",
+      note +
+        " 当前对应半衰期 " +
+        Number(p.halfLife.toFixed(2)) +
+        " 小时、参考阈值 " +
+        p.threshold +
+        " mg/L。",
+    );
   }
+  $("profileMode").onchange = previewProfile;
+  for (const id of Object.values(geneFields)) $(id).onchange = previewProfile;
+  $("profileForm").onsubmit = (e) => {
+    e.preventDefault();
+    const mode = $("profileMode").value;
+    if (mode === "manual") return;
+    const genes = selectedGenes();
+    data.profile = { ...data.profile, ...M.profileParameters(mode, genes) };
+    if (mode === "report") data.legacy.geno = genes;
+    persisted("代谢档案已保存，预测和曲线已同步");
+  };
+  $("parameterForm").onsubmit = (e) => {
+    e.preventDefault();
+    data.profile.halfLife = Number($("halfLife").value);
+    data.profile.threshold = Number($("threshold").value);
+    data.profile.dlmoOffset = Number($("dlmoOffset").value);
+    data.profile.source = "手动设置的估算参数";
+    data.profile.setupMode = "manual";
+    persisted("估算参数已更新");
+  };
+  $("resetParameters").onclick = () => {
+    data.profile = {
+      ...S.defaults().profile,
+      targetBed: data.profile.targetBed,
+    };
+    persisted("已恢复默认估算参数");
+  };
+  function openCustom(fromPicker) {
+    customFromPicker = fromPicker;
+    $("customForm").reset();
+    $("customDialog").showModal();
+  }
+  $("addCustom").onclick = () => openCustom(false);
+  $("pickerCustom").onclick = () => openCustom(true);
+  $("customForm").onsubmit = (e) => {
+    e.preventDefault();
+    const drink = $("customName").value.trim();
+    if (!drink) {
+      $("customName").focus();
+      return;
+    }
+    const b = {
+      k: "u-" + S.uid(),
+      drink,
+      brand: "自定义",
+      category: "自定义",
+      spec: $("customSpec").value.trim(),
+      mg: Number($("customMg").value),
+      source: "personal",
+    };
+    if (!S.validBev(b)) return;
+    data.custom.push(b);
+    $("customDialog").close();
+    persisted("饮品已保存");
+    if (customFromPicker) selectDrink(b);
+  };
+  document.addEventListener("click", (e) => {
+    const b = e.target.closest("button");
+    if (!b) return;
+    if (b.id === "clearDrinkFilters") {
+      $("drinkSearch").value = "";
+      $("brandFilter").value = "";
+      renderPicker();
+      $("drinkSearch").focus();
+    }
+    if (b.dataset.drink)
+      selectDrink(drinks().find((x) => x.k === b.dataset.drink));
+    if (b.dataset.recent)
+      openDrink(
+        "plan",
+        drinks().find((x) => x.k === b.dataset.recent) ||
+          active().find((r) => r.beverage.k === b.dataset.recent)?.beverage,
+      );
+    if (b.dataset.edit || b.dataset.repeat) {
+      const r = active().find(
+        (r) => r.id === (b.dataset.edit || b.dataset.repeat),
+      );
+      if (r) openDrink("record", r.beverage, b.dataset.edit ? r : null);
+    }
+    if (b.dataset.delete) {
+      const record = data.records.find((r) => r.id === b.dataset.delete);
+      if (!record) return;
+      record.deletedAt = record.updatedAt = new Date().toISOString();
+      undoRecords.push({ id: record.id });
+      const list = b.closest(".page"), index = [...list.querySelectorAll("[data-delete]")].indexOf(b);
+      const ok = save();
+      render();
+      const next = [...list.querySelectorAll("[data-delete]")];
+      if (next.length) next[Math.min(index, next.length - 1)].focus();
+      else focusPageHeading();
+      updateUndo(ok ? "记录已删除，可以撤销。" : "删除未保存，可以撤销或导出备份。");
+    }
+    if (b.dataset.deleteCustom) {
+      const removed = data.custom.find((x) => x.k === b.dataset.deleteCustom);
+      data.custom = data.custom.filter((x) => x.k !== b.dataset.deleteCustom);
+      save();
+      render();
+      $("addCustom").focus();
+      if (removed) {
+        undoRecords.push({ custom: removed });
+        updateUndo("饮品已移除，历史记录还在。可以撤销。");
+      }
+    }
+    if (b.dataset.sleepDate) openSleep(b.dataset.sleepDate);
+  });
+  $("undoDelete").onclick = () => {
+    const undoRecord = undoRecords.pop();
+    if (!undoRecord) return;
+    if (undoRecord.custom) {
+      if (!data.custom.some((b) => b.k === undoRecord.custom.k)) data.custom.push(undoRecord.custom);
+    }
+    else {
+      const record = data.records.find((r) => r.id === undoRecord.id);
+      if (record) {
+        delete record.deletedAt;
+        record.updatedAt = new Date().toISOString();
+      }
+    }
+    persisted("已撤销删除");
+    updateUndo(undoRecords.length ? "已恢复一条，还可以继续撤销。" : "已撤销删除");
+    if (!undoRecords.length) {
+      const restored = [...document.querySelectorAll(".page:not([hidden]) [data-edit]")].find((b) => b.dataset.edit === undoRecord.id);
+      if (restored) restored.focus();
+      else if (undoRecord.custom) $("addCustom").focus();
+      else focusPageHeading();
+    }
+  };
+  $("dismissToast").onclick = () => {
+    $("toast").hidden = true;
+    restoreNoticeFocus();
+  };
+  $("dismissUndo").onclick = () => {
+    undoRecords.length = 0;
+    $("undoNotice").hidden = true;
+    focusPageHeading();
+  };
+  new ResizeObserver(([entry]) => {
+    document.documentElement.style.setProperty("--notice-height", entry.target.offsetHeight + "px");
+  }).observe($("notifications"));
+  $("exportJson").onclick = () => {
+    if (blocked) {
+      try {
+        download(
+          "caffnap-unreadable-backup.json",
+          new Blob([localStorage.getItem(S.KEY) || "{}"], {
+            type: "application/json",
+          }),
+        );
+      } catch {
+        toast("浏览器拒绝读取原始数据。");
+      }
+      return;
+    }
+    download(
+      "caffnap-backup-" + S.dayKey(new Date()) + ".json",
+      new Blob(
+        [
+          JSON.stringify(
+            {
+              app: "caffnap",
+              version: 2,
+              exportedAt: new Date().toISOString(),
+              data,
+            },
+            null,
+            2,
+          ),
+        ],
+        { type: "application/json" },
+      ),
+    );
+  };
+  $("exportCsv").onclick = () => {
+    const rows = [
+      ["date", "time", "drink", "brand", "servings", "caffeine_mg"],
+    ];
+    active()
+      .sort((a, b) => Date.parse(a.consumedAt) - Date.parse(b.consumedAt))
+      .forEach((r) =>
+        rows.push([
+          S.dayKey(r.consumedAt),
+          nowTime(r.consumedAt),
+          name(r.beverage),
+          r.beverage.brand || "",
+          r.cups,
+          dose(r),
+        ]),
+      );
+    const csv =
+      "\uFEFF" +
+      rows
+        .map((row) =>
+          row
+            .map((value) => {
+              let s = String(value);
+              if (/^[=+@-]/.test(s)) s = "'" + s;
+              return '"' + s.replace(/"/g, '""') + '"';
+            })
+            .join(","),
+        )
+        .join("\r\n");
+    download(
+      "caffnap-records.csv",
+      new Blob([csv], { type: "text/csv;charset=utf-8" }),
+    );
+  };
+  $("importJson").onchange = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    try {
+      if (blocked) throw new Error("请先保存原始备份，当前已暂停写入。");
+      if (file.size > 10 * 1024 * 1024)
+        throw new Error("备份文件超过 10 MB，未导入。");
+      const merged = store.importBackup(JSON.parse(await file.text()), data);
+      if (!store.save(merged))
+        throw new Error("浏览器无法保存，未替换当前数据。");
+      const added = merged.records.length - data.records.length;
+      data = merged;
+      render();
+      warning();
+      text(
+        "importResult",
+        "导入完成，新增 " + added + " 条摄入记录。重复导入不会重复添加。",
+      );
+    } catch (error) {
+      text(
+        "importResult",
+        error instanceof SyntaxError ? "文件不是有效的 JSON。" : error.message,
+      );
+    }
+    e.target.value = "";
+  };
+  $("geneFile").onchange = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    try {
+      if (file.size > 30 * 1024 * 1024) throw new Error("报告超过 30 MB。");
+      const loci = {
+          rs762551: ["cyp", ["AA", "AC", "CC"]],
+          rs5751876: ["ador", ["TT", "CT", "CC"]],
+          rs4410790: ["ahr", ["TT", "GT", "GG"]],
+          rs1481012: ["abcg2", ["AA", "AG", "GG"]],
+          rs7221412: ["per1", ["AA", "AG", "GG"]],
+        },
+        found = {};
+      for (const line of (await file.text()).split(/\r?\n/)) {
+        const parts = line.trim().split(/\s+/),
+          locus = loci[parts[0]];
+        if (!locus) continue;
+        const gt = (parts[3] || "").toUpperCase().split("").sort().join("");
+        const match = locus[1].find((v) => v.split("").sort().join("") === gt);
+        if (match) found[locus[0]] = { g: match };
+      }
+      if (!Object.keys(found).length)
+        throw new Error("未找到支持的有效位点，当前档案保持不变。");
+      data.profile = {
+        ...data.profile,
+        ...M.profileParameters("report", found),
+      };
+      data.legacy.geno = found;
+      const ok = save();
+      render();
+      text(
+        "geneResult",
+        ok
+          ? "已使用检出位点更新探索性参数。未检出位点沿用默认值。"
+          : "参数仅在本页更新，未能保存。",
+      );
+      warning();
+    } catch (error) {
+      text("geneResult", error.message);
+    }
+    e.target.value = "";
+  };
+  window.addEventListener("storage", (e) => {
+    if (e.key !== S.KEY) return;
+    const incoming = store.load();
+    if (incoming && !document.querySelector("dialog[open]")) {
+      data = incoming;
+      render();
+      toast("已同步此浏览器其他页面的更改");
+    } else {
+      blocked = true;
+      text("storageWarning", "其他页面修改了记录。请刷新后继续，避免覆盖。");
+      $("storageWarning").hidden = false;
+    }
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (
+      !document.hidden &&
+      !document.querySelector("dialog[open]") &&
+      !featureTour?.isActive() &&
+      !document.activeElement?.matches("input, select")
+    )
+      render();
+  });
+  setInterval(() => {
+    if (
+      !document.hidden &&
+      !document.querySelector("dialog[open]") &&
+      !featureTour?.isActive() &&
+      !document.activeElement?.matches("input, select")
+    ) {
+      renderHome();
+      icons();
+    }
+  }, 60000);
+  let resizeTimer;
+  window.addEventListener("resize", () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+      drawCharts(M.predict(active(), target(), data.profile, napSettings()));
+    }, 150);
+  });
+  render();
+  warning();
+  if (!data.onboarding && !data.featureTourSeen && !blocked)
+    openOrientation();
 })();

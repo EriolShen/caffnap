@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#1a1a2e">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>CaffNap · 咖啡因宵禁 & 入睡预测</title>
+<script src="../../db.js"></script>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header>
+  <h1>Caff<span>Nap</span></h1>
+  <p>咖啡因宵禁 & 入睡预测 · 咖啡小睡教练</p>
+</header>
+
+<nav class="tabs">
+  <button data-tab="today" class="on">☕ 今日</button>
+  <button data-tab="stats">📊 统计</button>
+  <button data-tab="data">🗃️ 数据</button>
+</nav>
+
+<!-- ==================== 今日 ==================== -->
+<section id="tab-today">
+  <div class="layout">
+
+    <!-- 预测结果 -->
+    <div class="card a-result" style="border-width:2px;">
+      <h2><span class="dot" style="background:var(--green)"></span>预测结果</h2>
+      <div class="result-sub">最早可入睡时间（咖啡因清除 ∧ 褪黑素达 DLMO）</div>
+      <div class="result-main" id="bedtime">—</div>
+      <div class="result-sub" id="bedtimeSub"></div>
+      <div class="stat-row" style="margin-top:10px;"><span>估算半衰期</span><b id="stHalf">—</b></div>
+      <div class="stat-row"><span>咖啡因降至阈值</span><b id="stClear">—</b></div>
+      <div class="stat-row"><span>褪黑素 DLMO（实际）</span><b id="stDlmo">—</b></div>
+      <div class="stat-row"><span>PER1 节律修正（rs7221412）</span><b id="stPer1">—</b></div>
+      <div><span class="badge ok" id="badge">—</span></div>
+      <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;">
+        <button class="btn small" id="shareCardBtn">📤 生成吐槽卡片</button>
+        <button class="btn small ghost" id="icsBtn">📅 宵禁提醒入日历</button>
+      </div>
+    </div>
+
+    <!-- 摄入记录 -->
+    <div class="card a-doses">
+      <h2><span class="dot" style="background:var(--orange)"></span>今日咖啡因摄入</h2>
+      <div id="doseList"></div>
+      <button class="btn ghost" id="addDose" style="width:100%;">＋ 添加一杯</button>
+    </div>
+
+    <!-- 小睡 -->
+    <div class="card a-nap">
+      <h2><span class="dot" style="background:var(--purple)"></span>咖啡小睡（可选）</h2>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;">
+        <label class="chk" style="margin-bottom:8px;"><input type="checkbox" id="napOn"> 今天做了小睡</label>
+        <div class="fld" style="flex:1;min-width:100px;"><label>开始时间</label><input type="time" id="napT" value="14:10"></div>
+        <div class="fld" style="flex:1;min-width:120px;"><label>时长</label>
+          <select id="napD">
+            <option value="15">15 min（经典咖啡小睡）</option>
+            <option value="20" selected>20 min</option>
+            <option value="30">30 min</option>
+            <option value="60">60 min</option>
+          </select></div>
+        <div class="fld" style="flex:1;min-width:100px;"><label>起床时间（锚定睡眠压力）</label><input type="time" id="wakeT" value="07:00"></div>
+      </div>
+    </div>
+
+    <!-- 宵禁反推 -->
+    <div class="card a-curfew">
+      <h2><span class="dot" style="background:var(--red)"></span>宵禁反推</h2>
+      <div class="grid" style="align-items:end;">
+        <div class="fld"><label>目标入睡时间</label><input type="time" id="targetBed" value="23:00"></div>
+        <div class="fld"><label>最后一杯最晚（按所选饮品 1 杯）</label>
+          <div style="font-size:26px;font-weight:700;color:var(--orange);font-variant-numeric:tabular-nums;" id="lastCall">—</div></div>
+      </div>
+      <div class="note" id="lastCallNote"></div>
+    </div>
+
+    <!-- 代谢档案 -->
+    <div class="card a-geno">
+      <h2><span class="dot" style="background:var(--blue)"></span>代谢档案</h2>
+      <div class="grid">
+        <div class="fld"><label>CYP1A2 rs762551（决定半衰期）</label>
+          <select id="cyp">
+            <option value="AA">AA · 快代谢（t½≈3.2h）</option>
+            <option value="AC" selected>AC · 中代谢（t½≈4.5h）</option>
+            <option value="CC">CC · 慢代谢（t½≈7.5h）</option>
+          </select></div>
+        <div class="fld"><label>ADORA2A rs5751876（决定睡眠阈值）</label>
+          <select id="ador">
+            <option value="TT">TT · 敏感（阈值 1.3 mg/L）</option>
+            <option value="CT" selected>CT · 中等（阈值 1.0 mg/L）</option>
+            <option value="CC">CC · 钝感（阈值 0.8 mg/L）</option>
+          </select></div>
+        <div class="fld"><label>AHR rs4410790</label>
+          <select id="ahr">
+            <option value="TT">TT</option>
+            <option value="GT" selected>GT</option>
+            <option value="GG">GG · 诱导强</option>
+          </select></div>
+        <div class="fld"><label>ABCG2 rs1481012</label>
+          <select id="abcg2">
+            <option value="AA">AA</option>
+            <option value="AG" selected>AG</option>
+            <option value="GG">GG</option>
+          </select></div>
+      </div>
+      <div style="display:flex;gap:18px;margin-top:12px;flex-wrap:wrap;">
+        <label class="chk"><input type="checkbox" id="smoke"> 吸烟（代谢加速）</label>
+        <label class="chk"><input type="checkbox" id="oc"> 口服避孕药/妊娠</label>
+      </div>
+      <div class="stat-row" style="margin-top:10px;"><span>个人化修正（来自实际睡眠反馈）</span><b id="stCalib">未校准</b></div>
+      <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:14px;">
+        <label class="btn ghost" for="geneFile" style="cursor:pointer;display:inline-block;">🧬 导入基因报告（23andMe / 微基因 txt）</label>
+        <input type="file" id="geneFile" accept=".txt,text/plain" style="display:none">
+        <div id="geneStatus" style="font-size:13px;color:var(--sub);margin-top:10px;line-height:1.7;"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 曲线图 -->
+  <div class="card">
+    <h2><span class="dot" style="background:var(--blue)"></span>血药浓度曲线</h2>
+    <svg id="chartCaf" viewBox="0 0 560 200" width="100%"></svg>
+  </div>
+  <div class="card">
+    <h2><span class="dot" style="background:var(--purple)"></span>褪黑素节律（虚线 = 无咖啡因自然节律）</h2>
+    <svg id="chartMel" viewBox="0 0 560 190" width="100%"></svg>
+  </div>
+  <div class="card">
+    <h2><span class="dot" style="background:var(--green)"></span>昼夜节律 & 睡眠压力（双过程模型）</h2>
+    <svg id="chartAlert" viewBox="0 0 560 190" width="100%"></svg>
+    <div class="stat-row"><span>今日午后低谷（预计）</span><b id="stDip">—</b></div>
+    <div class="stat-row"><span>夜间最低清醒度（预计）</span><b id="stNight">—</b></div>
+  </div>
+
+  <div class="note">
+    模型：一房室一级消除，C(t)=Σ(mg/42)×1.15×2^(−Δt/t½)。双过程清醒度 = 昼夜节律基线 + 咖啡因加成(≤+28) − 腺苷压力(清醒每小时+4，小睡每分钟清1.2)，节律基线含 15:30 午后低谷与夜间下滑。半衰期由 CYP1A2 主导，AHR/ABCG2 每等位微调 ±5–10%，吸烟 ×0.7，避孕药/妊娠 ×1.5。DLMO = 23:00−2h，18:00–01:00 摄入按 200mg→推迟 40min 相位延迟，咖啡因在血期间压制分泌幅度 30%。小睡结束晚于 15:00 按 (结束−15h)×(时长/30)×30min 推迟入睡（上限 90min）。录入「实际几点睡」后，系统按数值微分把残差折算成半衰期偏移，用指数滑动平均（α=0.4，限幅 ±2h）逐步修正个人 t½。所有数据仅存于本机浏览器（localStorage），不上传。基因报告导入仅在本机解析目标位点，原文件不出设备。个体差异 ±1–2h，本工具不构成医疗建议。
+  </div>
+</section>
+
+<!-- ==================== 统计 ==================== -->
+<section id="tab-stats" hidden>
+
+  <!-- 睡眠反馈 -->
+  <div class="card">
+    <h2><span class="dot" style="background:var(--green)"></span>睡眠反馈 · 校准个人代谢</h2>
+    <div class="result-sub" style="margin-bottom:10px;">输入昨晚实际情况，系统会把「预测 vs 实际」的偏差折算成你的个人半衰期修正，越录越准。</div>
+    <div class="grid" style="grid-template-columns:1fr 1fr 1fr;align-items:end;">
+      <div class="fld"><label>日期（哪晚）</label><input type="date" id="fbDate"></div>
+      <div class="fld"><label>实际几点睡</label><input type="time" id="fbBed" value="23:30"></div>
+      <div class="fld"><label>实际几点起</label><input type="time" id="fbWake" value="07:00"></div>
+    </div>
+    <button class="btn" id="fbSubmit" style="margin-top:12px;width:100%;">记录并校准</button>
+    <div id="fbResult" style="font-size:13px;color:var(--sub);margin-top:10px;line-height:1.7;"></div>
+  </div>
+
+  <!-- 统计概览 -->
+  <div class="card">
+    <h2><span class="dot" style="background:var(--orange)"></span>概览</h2>
+    <div class="stat-row"><span>记录天数</span><b id="sumDays">—</b></div>
+    <div class="stat-row"><span>连续记录</span><b id="sumStreak">—</b></div>
+    <div class="stat-row"><span>日均咖啡因</span><b id="sumMg">—</b></div>
+    <div class="stat-row"><span>平均预测入睡</span><b id="sumPred">—</b></div>
+    <div class="stat-row"><span>平均实际入睡（反馈）</span><b id="sumActual">—</b></div>
+    <div class="stat-row"><span>平均起床（反馈）</span><b id="sumWake">—</b></div>
+  </div>
+
+  <!-- 热力图 -->
+  <div class="card">
+    <h2><span class="dot" style="background:var(--orange)"></span>咖啡因热力图
+      <span class="spacer"></span>
+      <span class="seg" id="hmSeg">
+        <button data-range="12" class="on">近 12 周</button>
+        <button data-range="52">近一年</button>
+      </span>
+    </h2>
+    <div class="hm-wrap"><div class="hm" id="heatmap"></div></div>
+    <div class="hm-legend">
+      少 <span class="hm-cell"></span><span class="hm-cell l1"></span><span class="hm-cell l2"></span><span class="hm-cell l3"></span><span class="hm-cell l4"></span> 多
+      <span style="margin-left:10px;">按每日咖啡因总量（mg）分档</span>
+    </div>
+  </div>
+</section>
+
+<!-- ==================== 数据 ==================== -->
+<section id="tab-data" hidden>
+
+  <!-- 自定义饮品 -->
+  <div class="card">
+    <h2><span class="dot" style="background:var(--blue)"></span>自定义饮品</h2>
+    <div class="result-sub" style="margin-bottom:10px;">官方库没有的饮品（如速溶、瓶装）可以加在这里，会并入「品牌 → 自定义」选择器。</div>
+    <div class="grid" style="grid-template-columns:1.4fr 1fr;">
+      <div class="fld"><label>名称 *</label><input type="text" id="ubName" placeholder="如：三合一速溶"></div>
+      <div class="fld"><label>咖啡因（mg/杯）*</label><input type="number" id="ubMg" min="0" max="600" step="1" placeholder="75"></div>
+      <div class="fld"><label>类型</label>
+        <select id="ubType">
+          <option value="美式">美式/黑咖</option>
+          <option value="拿铁">拿铁/奶咖</option>
+          <option value="浓缩">浓缩</option>
+          <option value="速溶咖啡">速溶/冻干</option>
+          <option value="奶茶">奶茶/其他</option>
+        </select></div>
+      <div class="fld"><label>规格说明（可选）</label><input type="text" id="ubSpec" placeholder="如：1 条 2g"></div>
+    </div>
+    <button class="btn" id="ubAdd" style="margin-top:12px;width:100%;">＋ 保存饮品</button>
+    <div id="ubList" style="margin-top:10px;"></div>
+  </div>
+
+  <!-- 导出 / 导入 -->
+  <div class="card">
+    <h2><span class="dot" style="background:var(--purple)"></span>数据导出 / 导入</h2>
+    <div class="result-sub" style="margin-bottom:10px;">全部数据只存在本机浏览器，换设备/清缓存前请先导出备份。</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+      <button class="btn ghost" id="expJson">⬇️ 导出完整备份（JSON）</button>
+      <button class="btn ghost" id="expCsv">⬇️ 导出历史记录（CSV）</button>
+      <label class="btn ghost" for="impFile" style="cursor:pointer;">⬆️ 导入备份（JSON）</label>
+      <input type="file" id="impFile" accept=".json,application/json" style="display:none">
+    </div>
+    <div id="impResult" style="font-size:13px;color:var(--sub);margin-top:10px;line-height:1.7;"></div>
+    <div class="note">说明：JSON 备份包含摄入历史、睡眠反馈、个人校准、自定义饮品和基因档案，可完整恢复；CSV 为按日汇总表格，适合用 Excel 分析，不支持回导。</div>
+  </div>
+</section>
+
+<footer>CaffNap v1.2 · 生活方式记录工具 · 数据仅存本机</footer>
+
+<canvas id="shareCanvas" width="900" height="1125" style="display:none"></canvas>
+<script src="app.js"></script>
+</body>
+</html>
