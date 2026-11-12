@@ -45,6 +45,10 @@ export async function checkDecision({ command, evaluate, click, shot, sleep }) {
     assert.equal(await count(), 0);
     const original = await evaluate('document.querySelector("#decisionSleep").textContent');
     assert.ok(original.includes('明天'), 'Evening coffee crosses midnight');
+    assert.equal(await evaluate('document.querySelector("#decisionDelta").textContent'), '比不加这一杯：约晚 6 小时 50 分钟');
+    assert.equal(await evaluate('document.querySelector("#decisionSleep").tagName'), 'DD');
+    assert.equal(await evaluate('document.querySelector("#compareOptions .option-dose").textContent'), '约 05:50');
+    assert.ok(await evaluate('parseFloat(getComputedStyle(document.querySelector("#decisionSleep")).fontSize) > parseFloat(getComputedStyle(document.querySelector("#decisionDelta")).fontSize)'));
     await click('input[name="comparisonChoice"][value="half"]');
     assert.notEqual(await evaluate('document.querySelector("#decisionSleep").textContent'), original);
     await click('input[name="comparisonChoice"][value="alternative"]');
@@ -73,6 +77,10 @@ export async function checkDecision({ command, evaluate, click, shot, sleep }) {
     await click('[data-drink="qa-heavy"]');
     assert.ok(await evaluate('document.querySelector("#decisionSleep").textContent.includes("超出")'));
     assert.equal(await evaluate('/NaN|Invalid Date/.test(document.querySelector("#comparison").textContent)'), false);
+    await command('Emulation.setDeviceMetricsOverride', { width: 320, height: 740, deviceScaleFactor: 1, mobile: true });
+    assert.equal(await evaluate('getComputedStyle(document.querySelector("#decisionSleep")).fontSize'), '22px');
+    assert.equal(await evaluate('document.querySelector("#drinkDialog").scrollWidth <= document.querySelector("#drinkDialog").clientWidth'), true);
+    await shot('decision-unavailable-320');
     await click('#finishCompare');
     await click('#startRecord');
     assert.equal(await evaluate('document.querySelector("#planContext").hidden'), true);

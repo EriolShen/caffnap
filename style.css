@@ -1334,9 +1334,11 @@ body:has(dialog[open]) {
   display: block;
   font-size: 12px;
 }
-#decisionDelta { font-size: 32px; }
+#decisionDelta { font-size: 13px; }
 #decisionClear { font-size: 18px; }
-#decisionSleep { font-size: 13px; }
+#decisionSleep { font-size: 32px; }
+#decisionSleep.unavailable { font-size: 22px; }
+#compareOptions .option-dose.unavailable { font-size: 16px; }
 .decision-options {
   border: 0;
   padding: 0;

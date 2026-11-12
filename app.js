@@ -69,6 +69,13 @@
       duration: 20,
       wake: "07:00",
     };
+  function durationLabel(minutes) {
+    if (!Number.isFinite(minutes) || minutes < 0) return "暂无法估算";
+    const total = Math.round(minutes);
+    if (total <= 60) return total + " 分钟";
+    const hours = Math.floor(total / 60), remainder = total % 60;
+    return hours + " 小时" + (remainder ? " " + remainder + " 分钟" : "");
+  }
   function dateTimeLabel(date) {
     if (!date) return "暂无法估算";
     const d = new Date(date),
@@ -315,20 +322,19 @@
           ? "至次日中午未满足模型条件"
           : result.sleep > target()
             ? "晚于睡眠目标约 " +
-              Math.ceil((result.sleep - target()) / 60000) +
-              " 分钟"
+              durationLabel(Math.ceil((result.sleep - target()) / 60000))
             : "模型条件早于或接近睡眠目标",
     );
     text("predClear", result.hasRecords ? dateTimeLabel(result.clear) : "—");
     text(
       "predDelay",
-      result.hasRecords ? Math.round(result.delay) + " 分钟" : "—",
+      result.hasRecords ? durationLabel(result.delay) : "—",
     );
-    text("predNap", Math.round(result.napDelay) + " 分钟");
+    text("predNap", durationLabel(result.napDelay));
     text(
       "predNapNote",
       nap.enabled
-        ? nap.start + " 开始 · " + nap.duration + " 分钟"
+        ? nap.start + " 开始 · " + durationLabel(nap.duration)
         : "未计入小睡",
     );
     text("napDay", napKey().slice(5).replace("-", "/"));
@@ -1019,7 +1025,7 @@
     return error ? null : { cups, consumedAt: new Date(date + "T" + time).toISOString() };
   }
   const delayLabel = (minutes) => minutes === null ? "暂无法比较" : minutes === 0
-    ? "未估算出额外延后" : "约晚 " + Math.max(5, Math.ceil(minutes / 5) * 5) + " 分钟";
+    ? "未估算出额外延后" : "约晚 " + durationLabel(Math.max(5, Math.ceil(minutes / 5) * 5));
   function estimatedTime(date) {
     if (!date) return "超出本次估算范围";
     const rounded = new Date(Math.ceil(+new Date(date) / 300000) * 300000);
@@ -1207,9 +1213,9 @@
           o.id +
           '" ' +
           (o.id === chosen ? "checked" : "") +
-          '></span><span class="option-dose">' +
-          (o.delayMinutes === null ? "暂无法比较" : "约 " + Math.ceil(o.delayMinutes / 5) * 5 + " 分钟") +
-          '</span><small>' + estimatedTime(o.sleep) + ' 入睡</small><small>' +
+          '></span><span class="option-dose' + (o.sleep ? '' : ' unavailable') + '">' +
+          (o.sleep ? "约 " + nowTime(new Date(Math.ceil(+o.sleep / 300000) * 300000)) : "暂无法估算") +
+          '</span><small>' + (o.sleep ? estimatedTime(o.sleep).replace(/^约 /, "") + ' 入睡' : '超出本次估算范围') + '</small><small>' +
           (o.beverage
             ? escape(name(o.beverage)) + " · " + o.cups + " 份"
             : "仅计算此前已记录的摄入") +
@@ -1230,11 +1236,12 @@
         ? "这一杯，可能让你更晚入睡" : "这杯的额外影响暂不明显");
     text("decisionAdvice", !o.sleep ? "截至 " + dateTimeLabel(o.prediction.end) + "，模型暂未找到预计入睡时间。"
       : !o.beverage ? "只计算已经喝过的饮品。"
-      : o.targetDelayMinutes > 0 ? "按这次试算，入睡可能比目标时间晚约 " + Math.max(5, Math.ceil(o.targetDelayMinutes / 5) * 5) + " 分钟。"
+      : o.targetDelayMinutes > 0 ? "按这次试算，入睡可能比目标时间晚约 " + durationLabel(Math.max(5, Math.ceil(o.targetDelayMinutes / 5) * 5)) + "。"
       : o.fitsTarget ? "没有估算出比目标更晚的入睡时间，仍要留意自己的感受。"
       : "入睡时间没有明显推迟，但含量区间的高值仍超过参考值。可以试试半份。" );
-    text("decisionSleep", "预计入睡 · " + estimatedTime(o.sleep));
-    text("decisionDelta", o.delayMinutes === null ? "暂无法比较" : "约 " + Math.ceil(o.delayMinutes / 5) * 5 + " 分钟");
+    text("decisionSleep", estimatedTime(o.sleep));
+    $("decisionSleep").classList.toggle("unavailable", !o.sleep);
+    text("decisionDelta", "比不加这一杯：" + delayLabel(o.delayMinutes));
     text("decisionClear", o.prediction.clear && o.prediction.clear <= new Date()
       ? "当前已低于参考值" : estimatedTime(o.prediction.clear));
     text("decisionThreshold", "参考浓度 " + data.profile.threshold + " mg/L；不是完全代谢，也不保证不影响睡眠。");
