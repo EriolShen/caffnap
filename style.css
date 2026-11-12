@@ -73,7 +73,8 @@ a {
 button:focus-visible,
 a:focus-visible,
 summary:focus-visible,
-h1:focus-visible {
+h1:focus-visible,
+h2[tabindex="-1"]:focus-visible {
   outline: 2px solid var(--green);
   outline-offset: 4px;
 }
@@ -854,8 +855,8 @@ body:has(dialog[open]) {
 }
 .orientation-art {
   display: block;
-  width: 130px;
-  height: 130px;
+  width: 96px;
+  height: 96px;
   object-fit: contain;
   margin: 8px auto 16px;
 }
@@ -864,7 +865,36 @@ body:has(dialog[open]) {
   font-weight: 550;
 }
 .orientation-dialog .full {
-  margin-top: 24px;
+  margin-top: 20px;
+}
+.orientation-dialog .full + .full {
+  margin-top: 10px;
+}
+.orientation-meta {
+  margin-top: 12px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.setup-reminder {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  padding: 12px 0;
+  margin-bottom: 24px;
+  border-block: 1px solid var(--line);
+}
+.setup-reminder strong {
+  font-size: 14px;
+  font-weight: 600;
+}
+.setup-reminder p {
+  font-size: 13px;
+  color: var(--muted);
+}
+.setup-reminder .text-button {
+  flex-shrink: 0;
 }
 .orientation-dialog .text-button {
   margin-top: 8px;

@@ -191,6 +191,7 @@
     );
   }
   function renderHome() {
+    $("reactionReminder").hidden = !!data.reactionAssessment;
     const today = S.dayKey(new Date()),
       rows = recordsOn(today);
     const relevant = active().filter(
@@ -657,15 +658,23 @@
   let surveyOnly = false,
     surveyIndex = 0,
     surveyDraft = {},
-    surveyReturnTo = "editReaction";
+    surveyReturnTo = "editReaction",
+    surveyContinuation = null,
+    orientationSurveySkipped = false;
   function openOrientation(view = "welcome") {
-    const welcome = view === "welcome";
-    $("orientationWelcome").hidden = !welcome;
-    $("orientationInvite").hidden = welcome;
-    $("orientation").setAttribute("aria-labelledby", welcome ? "welcomeTitle" : "inviteTitle");
+    const views = {
+      welcome: ["orientationWelcome", "welcomeTitle", "orientationQuickSurvey"],
+      ready: ["orientationReady", "readyTitle", "orientationContinue"],
+      invite: ["orientationInvite", "inviteTitle", "orientationSurvey"],
+    };
+    if (view === "welcome") orientationSurveySkipped = false;
+    for (const [name, [id]] of Object.entries(views)) $(id).hidden = name !== view;
+    $("orientation").setAttribute("aria-labelledby", views[view][1]);
+    text("orientationQuickSurveyLabel", data.reactionAssessment ? "更新饮用反应自测" : "先做个小自测");
     text("orientationDefault", data.profile.setupMode === "default" ? "先用默认值" : "保留当前设置");
     $("orientation").showModal();
-    $(welcome ? "orientationStart" : "orientationSurvey").focus();
+    $("orientation").scrollTop = 0;
+    $(views[view][2]).focus({ preventScroll: true });
   }
   function rememberOrientation() {
     data.featureTourSeen = true;
@@ -674,11 +683,13 @@
   function dismissOrientation() {
     $("orientation").close();
     rememberOrientation();
+    $("reactionReminder").hidden = !!data.reactionAssessment;
     $("guideAgain").focus({ preventScroll: true });
   }
-  function openReactionSurvey(returnTo = "editReaction") {
+  function openReactionSurvey(returnTo = "editReaction", continuation = null) {
     surveyOnly = true;
     surveyReturnTo = returnTo;
+    surveyContinuation = continuation;
     surveyIndex = 0;
     surveyDraft = { ...data.reactionAssessment?.answers };
     $("onboarding").showModal();
@@ -701,6 +712,7 @@
   }
   function guide() {
     surveyOnly = false;
+    surveyContinuation = null;
     surveyIndex = 0;
     surveyDraft = { ...data.reactionAssessment?.answers };
     $("guideTarget").value = data.profile.targetBed;
@@ -735,7 +747,8 @@
     $("surveyNext").innerHTML =
       (surveyIndex === R.questions.length - 1 ? "查看预测起点" : "下一题") +
       icon("arrow-right");
-    text("surveySkip", surveyOnly ? "取消，不保存" : "跳过自测");
+    text("surveySkip", surveyContinuation === "tour" ? "先跳过，继续" : surveyOnly ? "取消，不保存" : "跳过自测");
+    text("surveyResultSkip", surveyContinuation === "tour" ? "暂不保存，继续" : "暂不保存");
     showGuideStep("guideSurvey", "surveyTitle");
     icons();
     $("surveyTitle").focus();
@@ -764,15 +777,28 @@
   }
   function updateSurveyApply() {
     const apply = $("surveyApply").checked;
+    const continues = !surveyOnly || surveyContinuation === "tour";
     text("surveySaveLabel", apply
-      ? (surveyOnly ? "保存并应用预测" : "应用预测并继续")
-      : (surveyOnly ? "仅保存回答" : "保存回答并继续"));
+      ? (continues ? "应用预测并继续" : "保存并应用预测")
+      : (continues ? "保存回答并继续" : "仅保存回答"));
     text("surveyApplyNote", apply
       ? "保存后替换当前估算参数，同步更新预测、宵禁和曲线。睡眠目标与实际记录保持不变。"
       : "保留当前预测参数（" + data.profile.source + "），本次仅保存自测回答。");
   }
-  function finishSurvey() {
-    if (surveyOnly) {
+  function finishSurvey(saved = false) {
+    if (surveyContinuation) {
+      const next = surveyContinuation;
+      surveyContinuation = null;
+      orientationSurveySkipped = !saved;
+      $("onboarding").close();
+      rememberOrientation();
+      if (next === "tour") {
+        text("readyDescription", saved
+          ? "自测已保存，之后也能随时调整。再花一点时间，看看怎么安排下一杯。"
+          : "没关系，先保留当前设置。自测以后也能补做，我们先看看怎么安排下一杯。");
+        openOrientation("ready");
+      } else $("guideAgain").focus({ preventScroll: true });
+    } else if (surveyOnly) {
       $("onboarding").close();
       $(surveyReturnTo).focus({ preventScroll: true });
     } else {
@@ -781,7 +807,12 @@
     }
   }
   function cancelGuide() {
-    if (surveyOnly) finishSurvey();
+    if (surveyContinuation) {
+      surveyContinuation = null;
+      $("onboarding").close();
+      rememberOrientation();
+      $("guideAgain").focus({ preventScroll: true });
+    } else if (surveyOnly) finishSurvey();
     else endGuide(false);
   }
   function setupChartHelp() {
@@ -1185,7 +1216,7 @@
       rememberOrientation();
       $("guideAgain").focus({ preventScroll: true });
       // Let Driver restore focus before opening the optional next dialog.
-      if (reason === "done" && !data.reactionAssessment)
+      if (reason === "done" && !data.reactionAssessment && !orientationSurveySkipped)
         queueMicrotask(() => openOrientation("invite"));
     },
   });
@@ -1197,17 +1228,24 @@
       toast("导览暂时没能打开，可以刷新重试，或先自己逛逛");
     }
   };
+  $("orientationContinue").onclick = () => $("orientationStart").onclick();
+  $("orientationQuickSurvey").onclick = () => {
+    $("orientation").close();
+    openReactionSurvey("guideAgain", "tour");
+  };
   $("orientationClose").onclick = dismissOrientation;
   $("orientationExplore").onclick = dismissOrientation;
   $("orientationDefault").onclick = dismissOrientation;
+  $("orientationReadySkip").onclick = dismissOrientation;
   $("orientation").addEventListener("cancel", (event) => {
     event.preventDefault();
     dismissOrientation();
   });
   $("orientationSurvey").onclick = () => {
     $("orientation").close();
-    openReactionSurvey("startDaily");
+    openReactionSurvey("guideAgain", "home");
   };
+  $("completeReaction").onclick = () => openReactionSurvey("completeReaction", "home");
   $("startDaily").onclick = guide;
   $("guideNext").onclick = () => {
     if (!$("guideTarget").reportValidity()) return;
@@ -1239,6 +1277,13 @@
     if (surveyIndex > 0) {
       surveyIndex--;
       renderSurvey();
+    } else if (surveyReturnTo === "completeReaction" && surveyContinuation === "home") {
+      finishSurvey();
+    } else if (surveyContinuation) {
+      const view = surveyContinuation === "tour" ? "welcome" : "invite";
+      surveyContinuation = null;
+      $("onboarding").close();
+      openOrientation(view);
     } else if (surveyOnly) finishSurvey();
     else {
       showGuideStep("guideStepOne", "onboardingTitle");
@@ -1250,6 +1295,7 @@
   $("reviewReaction").onclick = () => {
     if (!data.reactionAssessment) return;
     surveyOnly = true;
+    surveyContinuation = null;
     surveyReturnTo = "editReaction";
     surveyIndex = 0;
     surveyDraft = { ...data.reactionAssessment.answers };
@@ -1257,11 +1303,12 @@
     $("onboarding").showModal();
     $("surveyResultTitle").focus();
   };
-  $("surveySkip").onclick = finishSurvey;
-  $("surveyResultSkip").onclick = finishSurvey;
+  $("surveySkip").onclick = () => finishSurvey();
+  $("surveyResultSkip").onclick = () => finishSurvey();
   $("surveySave").onclick = () => {
     const previous = data.reactionAssessment,
       previousProfile = data.profile,
+      continuingToTour = surveyContinuation === "tour",
       apply = $("surveyApply").checked;
     data.reactionAssessment = {
       version: 1,
@@ -1287,8 +1334,9 @@
       return;
     }
     render();
-    finishSurvey();
-    toast(apply ? "自测已保存，预测、宵禁和曲线已更新" : "自测回答已保存，保留原有预测参数");
+    finishSurvey(true);
+    if (!continuingToTour)
+      toast(apply ? "自测已保存，预测、宵禁和曲线已更新" : "自测回答已保存，保留原有预测参数");
   };
   $("skipGuide").onclick = cancelGuide;
   $("onboarding").addEventListener("cancel", (e) => {

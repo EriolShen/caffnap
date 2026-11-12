@@ -115,7 +115,7 @@ function surveyHarness(mode = "default", apply = true, fail = false) {
   data.profile.setupMode = mode;
   const calls = [];
   const scope = {
-    $, data, R, M, S, surveyDraft: assessment().answers, surveyOnly: true,
+    $, data, R, M, S, surveyDraft: assessment().answers, surveyOnly: true, surveyContinuation: null,
     save: () => !fail,
     text: (id, value) => { $(id).textContent = value; },
     escape: (value) => value,
@@ -127,7 +127,7 @@ function surveyHarness(mode = "default", apply = true, fail = false) {
   };
   vm.createContext(scope);
   vm.runInContext(appSource.slice(appSource.indexOf('  $("surveySave").onclick'), appSource.indexOf('  $("skipGuide").onclick')), scope);
-  vm.runInContext(appSource.slice(appSource.indexOf("  function surveyResult()"), appSource.indexOf("  function finishSurvey()")), scope);
+  vm.runInContext(appSource.slice(appSource.indexOf("  function surveyResult()"), appSource.indexOf("  function finishSurvey(")), scope);
   return { $, data, calls, result: scope.surveyResult, submit: () => $("surveySave").onclick() };
 }
 test("newcomers apply by default; manual and report profiles require explicit opt-in", () => {

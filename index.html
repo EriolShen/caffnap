@@ -55,14 +55,18 @@
             <h1>今天的饮品与睡眠</h1>
           </div>
           <div class="page-actions">
-            <button class="text-button" id="guideAgain" title="查看功能导览">
-              <i data-lucide="compass"></i>功能导览
+            <button class="text-button" id="guideAgain" title="重新查看自测与功能介绍">
+              <i data-lucide="compass"></i>新手引导
             </button>
             <button class="button secondary" id="startDaily">
               <i data-lucide="notebook-pen"></i>今日记录
             </button>
           </div>
         </div>
+        <aside class="setup-reminder" id="reactionReminder" aria-label="饮用反应自测" hidden>
+          <div><strong>饮用反应小自测</strong><p>5 个问题，帮你选一组起步参数。</p></div>
+          <button class="text-button" id="completeReaction"><i data-lucide="clipboard-list"></i>开始自测</button>
+        </aside>
         <div class="overview">
           <section class="daily-status" aria-labelledby="statusTitle">
             <div class="decision-band" aria-labelledby="decisionTitle">
@@ -651,7 +655,7 @@
       </section>
       <footer>
         <span>CaffNap</span><span>饮用决策参考 · 非睡眠诊断</span
-        ><span>v2 · 本地预览</span>
+        ><span>v2</span>
       </footer>
     </main>
     <dialog id="orientation" class="onboarding-dialog orientation-dialog" aria-labelledby="welcomeTitle">
@@ -665,17 +669,25 @@
       <div id="orientationWelcome">
         <h2 id="welcomeTitle">欢迎来到 CaffNap</h2>
         <p class="orientation-lead">喜欢的饮品，今晚的好眠。</p>
-        <p class="muted">我们一起看看怎么安排。<br />喝之前可以比较，喝之后可以记录，<br />也能看看什么时候该收杯。</p>
-        <button class="button primary full" id="orientationStart"><i data-lucide="arrow-right"></i>带我看看</button>
+        <p class="muted">先聊聊你喝咖啡、茶后的感受，<br />帮你选一组起步参数，再认识页面上的功能。</p>
+        <p class="orientation-meta">5 个小问题 · 随时可以跳过</p>
+        <button class="button primary full" id="orientationQuickSurvey"><i data-lucide="clipboard-list"></i><span id="orientationQuickSurveyLabel">先做个小自测</span></button>
+        <button class="button secondary full" id="orientationStart"><i data-lucide="compass"></i>先看看功能</button>
         <button class="text-button" id="orientationExplore">先自己逛逛</button>
       </div>
+      <div id="orientationReady" hidden>
+        <h2 id="readyTitle">接下来，认识一下页面</h2>
+        <p class="muted" id="readyDescription"></p>
+        <button class="button primary full" id="orientationContinue"><i data-lucide="compass"></i>看看主要功能</button>
+        <button class="text-button" id="orientationReadySkip">直接开始使用</button>
+      </div>
       <div id="orientationInvite" hidden>
-        <h2 id="inviteTitle">再了解你一点？</h2>
-        <p class="muted">聊聊你喝咖啡、茶之后的感受，<br />帮你选一组起步参数。</p>
-        <button class="button primary full" id="orientationSurvey"><i data-lucide="arrow-right"></i>好，试试看</button>
+        <h2 id="inviteTitle">再做个饮用反应自测？</h2>
+        <p class="muted">5 个小问题，聊聊你喝咖啡、茶后的感受。<br />保存时可以把建议参数用于预测。</p>
+        <button class="button primary full" id="orientationSurvey"><i data-lucide="clipboard-list"></i>开始自测</button>
         <button class="text-button" id="orientationDefault">先用默认值</button>
       </div>
-      <p class="small muted orientation-note">预测只是参考，也记得留意自己的感受。</p>
+      <p class="small muted orientation-note">自测不是代谢检测。预测只是参考，也记得留意自己的感受。</p>
     </dialog>
     <dialog
       id="onboarding"

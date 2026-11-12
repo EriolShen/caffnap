@@ -114,7 +114,7 @@ function orientationHarness() {
   };
   vm.createContext(scope);
   vm.runInContext(app.slice(app.indexOf("  let surveyOnly = false,"), app.indexOf("  function showGuideStep(")), scope);
-  vm.runInContext(app.slice(app.indexOf("  function finishSurvey()"), app.indexOf("  function cancelGuide()")), scope);
+  vm.runInContext(app.slice(app.indexOf("  function finishSurvey("), app.indexOf("  function setupChartHelp()")), scope);
   vm.runInContext(app.slice(app.indexOf("  featureTour = CaffNapTour.create("), app.indexOf('  $("startDaily").onclick')), scope);
   return {
     $, data, scope,
@@ -129,6 +129,8 @@ test("first visit opens a welcome, not a tour or survey; returning users are lef
   assert.equal(h.$("orientation").open, true);
   assert.equal(h.$("orientationWelcome").hidden, false);
   assert.equal(h.$("orientationInvite").hidden, true);
+  assert.equal(h.$("orientationReady").hidden, true);
+  assert.equal(h.focus, "orientationQuickSurvey");
   assert.equal(h.starts, 0);
   assert.equal(h.$("onboarding").open, false);
   for (const field of ["onboarding", "featureTourSeen"]) {
@@ -185,8 +187,64 @@ test("optional survey returns focus to a visible home control; advanced settings
   assert.equal(h.$("onboarding").open, true);
   h.scope.finishSurvey();
   assert.equal(h.$("onboarding").open, false);
-  assert.equal(h.focus, "startDaily");
+  assert.equal(h.focus, "guideAgain");
   assert.equal(h.data.profile.setupMode, "manual");
+});
+test("welcome opens the questionnaire directly without requiring a tour", () => {
+  const h = orientationHarness();
+  h.startup();
+  h.$("orientationQuickSurvey").onclick();
+  assert.equal(h.$("orientation").open, false);
+  assert.equal(h.$("onboarding").open, true);
+  assert.equal(h.starts, 0);
+  assert.equal(h.data.reactionAssessment, null);
+});
+test("skipping the initial survey preserves settings and does not invite it again after the tour", () => {
+  const h = orientationHarness();
+  h.data.profile.setupMode = "manual";
+  const profile = structuredClone(h.data.profile);
+  h.$("orientationQuickSurvey").onclick();
+  h.scope.finishSurvey();
+  assert.equal(h.$("orientationReady").hidden, false);
+  assert.equal(h.$("onboarding").open, false);
+  assert.deepEqual(h.data.profile, profile);
+  assert.equal(h.data.reactionAssessment, null);
+  h.$("orientationContinue").onclick();
+  assert.equal(h.starts, 1);
+  h.exit("done");
+  assert.equal(h.$("orientation").open, false);
+});
+test("a saved initial survey offers a tour, with a direct exit to the app", () => {
+  const h = orientationHarness();
+  h.$("orientationQuickSurvey").onclick();
+  h.data.reactionAssessment = { answers: {} };
+  h.scope.finishSurvey(true);
+  assert.equal(h.$("orientationReady").hidden, false);
+  assert.equal(h.focus, "orientationContinue");
+  h.$("orientationReadySkip").onclick();
+  assert.equal(h.$("orientation").open, false);
+  assert.equal(h.data.featureTourSeen, true);
+  assert.equal(h.starts, 0);
+});
+test("closing the initial survey exits cleanly instead of forcing the next step", () => {
+  const h = orientationHarness();
+  h.$("orientationQuickSurvey").onclick();
+  h.scope.cancelGuide();
+  assert.equal(h.$("onboarding").open, false);
+  assert.equal(h.$("orientation").open, false);
+  assert.equal(h.focus, "guideAgain");
+  assert.equal(h.data.reactionAssessment, null);
+});
+test("home completion entry works for returning users without reopening the tour", () => {
+  const h = orientationHarness();
+  h.data.featureTourSeen = true;
+  h.$("completeReaction").onclick();
+  assert.equal(h.$("onboarding").open, true);
+  h.data.reactionAssessment = { answers: {} };
+  h.scope.finishSurvey(true);
+  assert.equal(h.$("onboarding").open, false);
+  assert.equal(h.$("orientation").open, false);
+  assert.equal(h.starts, 0);
 });
 test("unavailable tour returns to the welcome without marking it seen", () => {
   const h = orientationHarness();

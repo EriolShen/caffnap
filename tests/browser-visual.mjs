@@ -5,6 +5,7 @@ import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { checkInterface } from './interface-checks.mjs';
+import { checkNewcomer } from './newcomer-checks.mjs';
 
 // A separate QA origin/profile: never reads or edits the user's file:// records.
 const root = path.resolve(import.meta.dirname, '..');
@@ -82,6 +83,7 @@ try {
   await command('Page.reload');
   await sleep(800);
   await evaluate('document.fonts.ready');
+  await checkNewcomer({ command, evaluate, click, shot, sleep });
   if (await evaluate('document.querySelector("#orientation").open')) await click('#orientationExplore');
   await checkInterface({ command, evaluate, click, shot, sleep, out });
   for (const [width, height] of [[1440,900],[1280,720],[1024,768],[820,1180],[768,1024],[390,844],[320,740]]) {
